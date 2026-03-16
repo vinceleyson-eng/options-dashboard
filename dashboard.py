@@ -21,9 +21,17 @@ from supabase import create_client
 load_dotenv()
 
 
+def get_secret(key, default=None):
+    """Get secret from Streamlit Cloud secrets or .env fallback."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.getenv(key, default)
+
+
 # --- TastyTrade Connection ---
 def get_tastytrade_mode():
-    return os.getenv("TASTYTRADE_MODE", "sandbox").lower()
+    return get_secret("TASTYTRADE_MODE", "sandbox").lower()
 
 
 @st.cache_data(ttl=60)
@@ -36,11 +44,11 @@ def load_tastytrade_account():
         is_sandbox = mode == "sandbox"
 
         if is_sandbox:
-            client_secret = os.getenv("TASTYTRADE_SANDBOX_CLIENT_SECRET")
-            refresh_token = os.getenv("TASTYTRADE_SANDBOX_REFRESH_TOKEN")
+            client_secret = get_secret("TASTYTRADE_SANDBOX_CLIENT_SECRET")
+            refresh_token = get_secret("TASTYTRADE_SANDBOX_REFRESH_TOKEN")
         else:
-            client_secret = os.getenv("TASTYTRADE_CLIENT_SECRET")
-            refresh_token = os.getenv("TASTYTRADE_REFRESH_TOKEN")
+            client_secret = get_secret("TASTYTRADE_CLIENT_SECRET")
+            refresh_token = get_secret("TASTYTRADE_REFRESH_TOKEN")
 
         if not client_secret or not refresh_token:
             return {"error": f"Missing TastyTrade {mode} credentials in .env"}
@@ -69,10 +77,10 @@ def load_tastytrade_account():
 # --- Supabase Connection ---
 @st.cache_resource
 def get_supabase():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    url = get_secret("SUPABASE_URL")
+    key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env")
+        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in secrets")
         st.stop()
     return create_client(url, key)
 
