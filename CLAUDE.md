@@ -142,10 +142,16 @@ python push_to_supabase.py
 
 ## Data Migrated
 - 5 dates: 2026-03-09, 2026-03-10, 2026-03-12, 2026-03-13, 2026-03-14
-- 653 total option rows
+- 219 option rows (monthly expirations only — weeklies purged 2026-03-16)
 
 ## Scan Data Columns (15 + checkbox)
 Symbol, Name, IVR, DTE, Delta, Exp Date, POP, P50, Strike, Bid, Ask, Bid-Ask, Put Price, Earnings, Underlying Price, **Select** (checkbox)
+
+## Scanner Rules
+- **Monthly expirations only** — weeklies filtered out (Stan's requirement 2026-03-16)
+- Filter: `expiration_type == "Regular"` in `daily_scan.py:find_all_valid_expirations()`
+- In TastyTrade, monthly = no "W" marker, weekly = has "W" marker
+- Change applied in `../tasty-trade/daily_scan.py`
 
 ## Phases
 1. **Dashboard + Position Reports** (DONE) — Supabase tables, Streamlit UI, checkbox → position report
