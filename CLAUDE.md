@@ -3,14 +3,29 @@
 ## Project
 Custom web dashboard for daily options trading research and position management. Replaces Google Sheets with Supabase + Streamlit.
 
-## Status: Phase 1 BUILT — Sending to Stan for review (2026-03-16)
+## Status: Phase 1 LIVE — Dashboard deployed, sandbox connected (2026-03-16)
+
+## Live URL
+- **Dashboard:** https://options-dashboard-stan.streamlit.app/
+- **GitHub:** https://github.com/vinceleyson-eng/options-dashboard (public)
+- **Hosting:** Streamlit Community Cloud (free tier)
+- **Secrets:** Configured in Streamlit Cloud Advanced Settings (not in repo)
+
+## TastyTrade Sandbox
+- **Sandbox account:** 5WW77042 (Individual, Cash, $100K)
+- **Sandbox user:** stanvince
+- **OAuth app:** stanvince Sandbox OAuth2 App
+- **Client ID:** 1a545b06-77cc-4e4e-8174-6c1145961aad
+- **Mode toggle:** `TASTYTRADE_MODE` env var — "sandbox" or "live"
+- **Daily reset:** Sandbox trades/positions/balances reset every 24h — Supabase is source of truth
 
 ## Architecture
 - **Database:** Supabase (PostgreSQL)
-- **Frontend:** Streamlit dashboard
+- **Frontend:** Streamlit dashboard (deployed on Streamlit Cloud)
 - **Data source:** Tastytrade API (existing `daily_scan.py` in `../tasty-trade/`)
 - **Automation:** n8n (existing workflows, updating destination from Google Sheets to Supabase)
 - **Position tracking:** Checkbox in dashboard → generates position report (Phase 1)
+- **Secrets:** `st.secrets` on Streamlit Cloud, `.env` for local dev (via `get_secret()` helper)
 
 ## Supabase
 - **Project ID:** tdzaxiwzbbqockidasfq
