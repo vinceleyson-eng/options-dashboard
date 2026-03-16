@@ -11,6 +11,7 @@ Run: streamlit run dashboard.py
 import os
 import json
 import asyncio
+from decimal import Decimal
 from datetime import date, datetime
 
 import pandas as pd
@@ -34,27 +35,40 @@ def get_tastytrade_mode():
     return get_secret("TASTYTRADE_MODE", "sandbox").lower()
 
 
+def get_tastytrade_session():
+    """Create a TastyTrade session for the current mode."""
+    from tastytrade import Session
+
+    mode = get_tastytrade_mode()
+    is_sandbox = mode == "sandbox"
+
+    if is_sandbox:
+        client_secret = get_secret("TASTYTRADE_SANDBOX_CLIENT_SECRET")
+        refresh_token = get_secret("TASTYTRADE_SANDBOX_REFRESH_TOKEN")
+    else:
+        client_secret = get_secret("TASTYTRADE_CLIENT_SECRET")
+        refresh_token = get_secret("TASTYTRADE_REFRESH_TOKEN")
+
+    if not client_secret or not refresh_token:
+        return None, f"Missing TastyTrade {mode} credentials"
+
+    session = Session(client_secret, refresh_token, is_test=is_sandbox)
+    return session, None
+
+
 @st.cache_data(ttl=60)
 def load_tastytrade_account():
     """Fetch account details from TastyTrade API."""
     try:
-        from tastytrade import Session, Account
+        from tastytrade import Account
+
+        session, error = get_tastytrade_session()
+        if error:
+            return {"error": error}
 
         mode = get_tastytrade_mode()
-        is_sandbox = mode == "sandbox"
-
-        if is_sandbox:
-            client_secret = get_secret("TASTYTRADE_SANDBOX_CLIENT_SECRET")
-            refresh_token = get_secret("TASTYTRADE_SANDBOX_REFRESH_TOKEN")
-        else:
-            client_secret = get_secret("TASTYTRADE_CLIENT_SECRET")
-            refresh_token = get_secret("TASTYTRADE_REFRESH_TOKEN")
-
-        if not client_secret or not refresh_token:
-            return {"error": f"Missing TastyTrade {mode} credentials in .env"}
 
         async def _fetch():
-            session = Session(client_secret, refresh_token, is_test=is_sandbox)
             accounts = await Account.get(session)
             if not accounts:
                 return {"mode": mode, "accounts": []}
@@ -73,6 +87,78 @@ def load_tastytrade_account():
         return asyncio.run(_fetch())
     except Exception as e:
         return {"error": str(e)}
+
+
+def place_trade_on_tastytrade(option_data, quantity=1, dry_run=True):
+    """Place a sell-to-open put order on TastyTrade.
+
+    Returns dict with order details or error.
+    dry_run=True validates without executing.
+    """
+    from tastytrade import Account
+    from tastytrade.order import (
+        NewOrder, Leg, OrderAction, OrderType,
+        OrderTimeInForce, InstrumentType,
+    )
+
+    session, error = get_tastytrade_session()
+    if error:
+        return {"error": error}
+
+    # Build the OCC option symbol: SYMBOL + YYMMDD + P + strike*1000 (8 digits)
+    exp = option_data["exp_date"]  # "2026-04-17"
+    exp_dt = datetime.strptime(exp, "%Y-%m-%d")
+    exp_code = exp_dt.strftime("%y%m%d")
+    strike_code = f"{int(float(option_data['strike']) * 1000):08d}"
+    symbol = option_data["symbol"]
+    occ_symbol = f"{symbol:<6}{exp_code}P{strike_code}"
+
+    # Limit price at the mid (put_price from scan)
+    limit_price = Decimal(str(option_data["put_price"]))
+
+    leg = Leg(
+        instrument_type=InstrumentType.EQUITY_OPTION,
+        symbol=occ_symbol,
+        action=OrderAction.SELL_TO_OPEN,
+        quantity=quantity,
+    )
+
+    order = NewOrder(
+        time_in_force=OrderTimeInForce.DAY,
+        order_type=OrderType.LIMIT,
+        legs=[leg],
+        price=limit_price,  # positive = credit for selling
+    )
+
+    async def _place():
+        accounts = await Account.get(session)
+        if not accounts:
+            return {"error": "No trading accounts found"}
+        acc = accounts[0]
+        result = await acc.place_order(session, order, dry_run=dry_run)
+        return {
+            "success": True,
+            "dry_run": dry_run,
+            "order_id": result.order.id if result.order else None,
+            "status": result.order.status.value if result.order else None,
+            "buying_power_effect": {
+                "change": float(result.buying_power_effect.change_in_buying_power),
+                "current": float(result.buying_power_effect.current_buying_power),
+                "new": float(result.buying_power_effect.new_buying_power),
+            },
+            "fees": {
+                "total": float(result.fee_calculation.total_fees),
+                "commission": float(result.fee_calculation.commission),
+            } if result.fee_calculation else None,
+            "warnings": [str(w) for w in result.warnings] if result.warnings else [],
+            "errors": [str(e) for e in result.errors] if result.errors else [],
+        }
+
+    try:
+        return asyncio.run(_place())
+    except Exception as e:
+        return {"error": str(e)}
+
 
 # --- Supabase Connection ---
 @st.cache_resource
@@ -151,7 +237,7 @@ def toggle_selection(option_id, selected):
     sb.table("scan_options").update({"selected": selected}).eq("id", option_id).execute()
 
 
-def create_position(option):
+def create_position(option, order_id=None, order_status=None):
     sb = get_supabase()
     position = {
         "scan_option_id": option["id"],
@@ -203,6 +289,111 @@ def build_options_dataframe(options, existing_option_ids):
             "_has_position": has_position,
         })
     return pd.DataFrame(rows)
+
+
+# --- Trade Confirmation Dialog ---
+@st.dialog("Confirm Trade", width="large")
+def trade_confirmation_dialog(option):
+    """Show trade confirmation popup with dry-run validation."""
+    mode = get_tastytrade_mode()
+    is_sandbox = mode == "sandbox"
+    mode_label = "SANDBOX" if is_sandbox else "LIVE"
+    mode_color = "#f0ad4e" if is_sandbox else "#d9534f"
+
+    st.markdown(
+        f'<span style="background:{mode_color}; color:#fff; padding:3px 10px; '
+        f'border-radius:4px; font-size:0.8rem; font-weight:600;">{mode_label} ORDER</span>',
+        unsafe_allow_html=True,
+    )
+
+    st.subheader(f"Sell to Open: {option['symbol']} Put")
+
+    # Order details
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"**Symbol:** {option['symbol']}")
+        st.markdown(f"**Company:** {option.get('name', '-')}")
+        st.markdown(f"**Strike:** ${option['strike']:.0f}")
+        st.markdown(f"**Expiration:** {option['exp_date']}")
+    with col2:
+        st.markdown(f"**Direction:** Sell to Open (Short Put)")
+        st.markdown(f"**Quantity:** 1 contract")
+        st.markdown(f"**Limit Price:** ${option['put_price']:.2f} (credit)")
+        st.markdown(f"**Time in Force:** Day")
+        st.markdown(f"**Order Type:** Limit")
+
+    st.divider()
+
+    # Step 1: Dry-run validation
+    if "dry_run_result" not in st.session_state:
+        st.session_state.dry_run_result = None
+
+    if st.button("Validate Order (Dry Run)", type="secondary", use_container_width=True):
+        with st.spinner("Validating order with TastyTrade..."):
+            result = place_trade_on_tastytrade(option, quantity=1, dry_run=True)
+            st.session_state.dry_run_result = result
+
+    # Show dry-run results
+    if st.session_state.dry_run_result:
+        result = st.session_state.dry_run_result
+
+        if "error" in result:
+            st.error(f"Validation failed: {result['error']}")
+        else:
+            st.success("Order validated successfully")
+
+            # Buying power impact
+            bp = result.get("buying_power_effect", {})
+            bp_col1, bp_col2, bp_col3 = st.columns(3)
+            bp_col1.metric("Current Buying Power", f"${bp.get('current', 0):,.2f}")
+            bp_col2.metric("Change", f"${bp.get('change', 0):,.2f}")
+            bp_col3.metric("New Buying Power", f"${bp.get('new', 0):,.2f}")
+
+            # Fees
+            fees = result.get("fees")
+            if fees:
+                st.caption(f"Fees: ${fees['total']:.2f} (Commission: ${fees['commission']:.2f})")
+
+            # Warnings
+            if result.get("warnings"):
+                for w in result["warnings"]:
+                    st.warning(w)
+
+            if result.get("errors"):
+                for e in result["errors"]:
+                    st.error(e)
+
+            st.divider()
+
+            # Step 2: Confirm & place real order
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Confirm & Place Order", type="primary", use_container_width=True):
+                    with st.spinner("Placing order on TastyTrade..."):
+                        live_result = place_trade_on_tastytrade(option, quantity=1, dry_run=False)
+
+                    if "error" in live_result:
+                        st.error(f"Order failed: {live_result['error']}")
+                    else:
+                        order_id = live_result.get("order_id")
+                        order_status = live_result.get("status")
+
+                        # Record in Supabase
+                        toggle_selection(option["id"], True)
+                        create_position(option, order_id=order_id, order_status=order_status)
+
+                        st.session_state.dry_run_result = None
+                        st.cache_data.clear()
+                        st.success(
+                            f"Order placed! {option['symbol']} {option['strike']:.0f} Put | "
+                            f"Order #{order_id} | Status: {order_status}"
+                        )
+                        st.balloons()
+
+            with c2:
+                if st.button("Cancel", use_container_width=True):
+                    st.session_state.dry_run_result = None
+                    st.rerun()
 
 
 # --- Sidebar ---
@@ -352,7 +543,7 @@ if page == "Daily Research":
     column_config = {
         "Select": st.column_config.CheckboxColumn(
             "Select",
-            help="Tick to create a position for this option",
+            help="Tick to open trade confirmation",
             width="small",
         ),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
@@ -383,7 +574,7 @@ if page == "Daily Research":
         key="options_table",
     )
 
-    # Detect checkbox changes and create positions
+    # Detect checkbox changes — open trade confirmation dialog
     if edited_df is not None:
         for idx in range(len(edited_df)):
             new_selected = edited_df.iloc[idx]["Select"]
@@ -395,12 +586,9 @@ if page == "Daily Research":
                 # Find the original option data
                 opt = next((o for o in filtered if o["id"] == option_id), None)
                 if opt:
-                    toggle_selection(option_id, True)
-                    position = create_position(opt)
-                    if position:
-                        st.toast(f"Position created: {opt['symbol']} {opt['strike']} Put", icon="✅")
-                        st.cache_data.clear()
-                        st.rerun()
+                    # Clear any previous dry-run state
+                    st.session_state.dry_run_result = None
+                    trade_confirmation_dialog(opt)
 
 
 # --- Open Positions Page ---
@@ -595,5 +783,5 @@ elif page == "Config":
 
 # --- Footer ---
 st.sidebar.divider()
-st.sidebar.caption(f"Stan's Options Dashboard v1.1 | TastyTrade: {get_tastytrade_mode().upper()}")
+st.sidebar.caption(f"Stan's Options Dashboard v2.0 | TastyTrade: {get_tastytrade_mode().upper()}")
 st.sidebar.caption(f"Data: {len(load_scan_dates())} scan dates")
