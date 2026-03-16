@@ -3,7 +3,7 @@
 ## Project
 Custom web dashboard for daily options trading research and position management. Replaces Google Sheets with Supabase + Streamlit.
 
-## Status: Phase 1 LIVE — Dashboard deployed, sandbox connected (2026-03-16)
+## Status: Phase 2 LIVE — Sandbox trading enabled (2026-03-16)
 
 ## Live URL
 - **Dashboard:** https://options-dashboard-stan.streamlit.app/
@@ -24,7 +24,8 @@ Custom web dashboard for daily options trading research and position management.
 - **Frontend:** Streamlit dashboard (deployed on Streamlit Cloud)
 - **Data source:** Tastytrade API (existing `daily_scan.py` in `../tasty-trade/`)
 - **Automation:** n8n (existing workflows, updating destination from Google Sheets to Supabase)
-- **Position tracking:** Checkbox in dashboard → generates position report (Phase 1)
+- **Position tracking:** Checkbox → confirmation dialog → TastyTrade order → Supabase record
+- **Order flow:** Dry-run validation → buying power check → confirm & place order
 - **Secrets:** `st.secrets` on Streamlit Cloud, `.env` for local dev (via `get_secret()` helper)
 
 ## Supabase
@@ -147,18 +148,33 @@ python push_to_supabase.py
 Symbol, Name, IVR, DTE, Delta, Exp Date, POP, P50, Strike, Bid, Ask, Bid-Ask, Put Price, Earnings, Underlying Price, **Select** (checkbox)
 
 ## Phases
-1. **Dashboard + Position Reports** (current) — Supabase tables, Streamlit UI, checkbox → position report
-2. **TastyTrade Sandbox** — checkbox also places order in TastyTrade sandbox
-3. **Moomoo Paper Trading** — checkbox also places order in Moomoo paper trade
+1. **Dashboard + Position Reports** (DONE) — Supabase tables, Streamlit UI, checkbox → position report
+2. **TastyTrade Sandbox** (DONE 2026-03-16) — checkbox → confirmation dialog → dry-run → place order on sandbox
+3. **Moomoo Paper Trading** — checkbox also places order in Moomoo paper trade (waiting Stan's specs)
 
-## Dashboard Features
+## Dashboard Features (v2.0)
 - **4 pages:** Daily Research, Open Positions, Position History, Config
 - **Calendar date picker** in sidebar (snaps to nearest available scan date)
 - **Light/Dark theme** via Streamlit native settings (hamburger menu > Settings > Theme)
 - **Data table** using `st.data_editor` — spreadsheet-style grid with checkboxes, dollar formatting, scrollable
-- **Checkbox → position creation** — ticking Select creates a position record (NO live trades)
+- **TastyTrade account panel** in sidebar — shows account number, cash balance, net liq, SANDBOX/LIVE badge
+- **Trade confirmation dialog** (`@st.dialog`) — pops up when checkbox ticked:
+  1. Shows order details: symbol, strike, exp, limit price, direction
+  2. "Validate Order" button → dry-run on TastyTrade, shows buying power impact + fees
+  3. "Confirm & Place Order" button → executes real order, records in Supabase
+  4. "Cancel" button → closes dialog without action
+- **Order type:** Sell-to-Open short put, Limit at mid price (put_price), Day order, Qty 1
 - **Filter by symbol**, sort by IVR/POP/P50/Delta/DTE, show selected only
 - **Position cards** with expandable daily P&L snapshots, close position button
+
+## Trading Flow (Phase 2)
+1. User ticks checkbox on an option in Daily Research
+2. Confirmation dialog opens with order details + SANDBOX/LIVE badge
+3. User clicks "Validate Order" → dry-run sent to TastyTrade API
+4. Buying power impact, fees, and warnings displayed
+5. User clicks "Confirm & Place Order" → real order placed on TastyTrade
+6. Position recorded in Supabase with order ID
+7. OCC symbol format: `SYMBOL  YYMMDDP00STRIKE000` (e.g., `NVDA  260417P00220000`)
 
 ## Key Decisions
 - Supabase over Google Sheets: no row limits, real-time triggers, proper relational data
@@ -167,9 +183,14 @@ Symbol, Name, IVR, DTE, Delta, Exp Date, POP, P50, Strike, Bid, Ask, Bid-Ask, Pu
 - Theme: uses Streamlit native theming (not CSS override) — CSS can't reach data_editor iframe
 - Google Sheets kept as backup: n8n pushes to both Supabase and Sheets on each scan
 
+## n8n Workflows
+- **Location:** `../tasty-trade/n8n/`
+- `tastytrade_daily_scan.json` — Cron trigger (weekdays 10:00 AM ET) → daily scan + push
+- `tastytrade_position_tracker.json` — Position tracking workflow
+- Import into n8n via Workflows > Import from file
+
 ## Next Steps
-- Get Stan's feedback on dashboard
-- Deploy for remote access (currently localhost:8501 only)
+- Test sandbox trading on Monday market open (orders won't fill on weekends)
 - Connect position_tracker.py to write snapshots to Supabase
-- Phase 2: TastyTrade Sandbox integration (after Stan's specs)
 - Phase 3: Moomoo paper trading (after Stan's specs)
+- Consider upgrading sandbox account to Reg T margin (currently Cash — $0 buying power for naked puts)
