@@ -1,0 +1,8 @@
+supabase
+python-dotenv
+google-auth
+google-api-python-client
+streamlit
+tastytrade
+scipy
+numpy
