@@ -58,35 +58,44 @@ def get_tastytrade_session():
 
 @st.cache_data(ttl=60)
 def load_tastytrade_account():
-    """Fetch account details from TastyTrade API."""
-    try:
-        from tastytrade import Account
+    """Fetch account details from TastyTrade API with a hard 12s timeout."""
+    import concurrent.futures
 
-        session, error = get_tastytrade_session()
-        if error:
-            return {"error": error}
+    def _sync():
+        try:
+            from tastytrade import Account
 
-        mode = get_tastytrade_mode()
+            session, error = get_tastytrade_session()
+            if error:
+                return {"error": error}
 
-        async def _fetch():
-            accounts = await Account.get(session)
-            if not accounts:
-                return {"mode": mode, "accounts": []}
+            mode = get_tastytrade_mode()
 
-            account_list = []
-            for acc in accounts:
-                balances = await acc.get_balances(session)
-                account_list.append({
-                    "account_number": acc.account_number,
-                    "cash_balance": float(balances.cash_balance or 0),
-                    "net_liquidating_value": float(balances.net_liquidating_value or 0),
-                    "equity_buying_power": float(balances.equity_buying_power or 0),
-                })
-            return {"mode": mode, "accounts": account_list}
+            async def _fetch():
+                accounts = await asyncio.wait_for(Account.get(session), timeout=8)
+                if not accounts:
+                    return {"mode": mode, "accounts": []}
+                account_list = []
+                for acc in accounts:
+                    balances = await asyncio.wait_for(acc.get_balances(session), timeout=8)
+                    account_list.append({
+                        "account_number": acc.account_number,
+                        "cash_balance": float(balances.cash_balance or 0),
+                        "net_liquidating_value": float(balances.net_liquidating_value or 0),
+                        "equity_buying_power": float(balances.equity_buying_power or 0),
+                    })
+                return {"mode": mode, "accounts": account_list}
 
-        return asyncio.run(_fetch())
-    except Exception as e:
-        return {"error": str(e)}
+            return asyncio.run(_fetch())
+        except Exception as e:
+            return {"error": str(e)}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_sync)
+        try:
+            return future.result(timeout=12)
+        except concurrent.futures.TimeoutError:
+            return {"error": "TastyTrade connection timed out"}
 
 
 def place_trade_on_tastytrade(option_data, quantity=1, dry_run=True):
@@ -400,38 +409,33 @@ def trade_confirmation_dialog(option):
 st.sidebar.title("Options Dashboard")
 st.sidebar.markdown(f"**Today:** {date.today().strftime('%A, %B %d, %Y')}")
 
-# TastyTrade Account Info — lazy loaded on button click
-mode = get_tastytrade_mode()
-is_sandbox = mode == "sandbox"
-mode_label = "SANDBOX" if is_sandbox else "LIVE"
-mode_color = "#f0ad4e" if is_sandbox else "#5cb85c"
-st.sidebar.markdown(
-    f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">'
-    f'<span style="font-weight:600;">TastyTrade</span>'
-    f'<span style="background:{mode_color}; color:#fff; padding:2px 8px; '
-    f'border-radius:4px; font-size:0.75rem; font-weight:600;">{mode_label}</span>'
-    f'</div>',
-    unsafe_allow_html=True,
-)
+# TastyTrade Account Info
+tt_data = load_tastytrade_account()
+if "error" in tt_data:
+    st.sidebar.warning(f"TastyTrade: {tt_data['error']}")
+else:
+    mode = tt_data["mode"]
+    is_sandbox = mode == "sandbox"
+    mode_label = "SANDBOX" if is_sandbox else "LIVE"
+    mode_color = "#f0ad4e" if is_sandbox else "#5cb85c"
 
-if "tt_account" not in st.session_state:
-    st.session_state.tt_account = None
+    st.sidebar.markdown(
+        f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">'
+        f'<span style="font-weight:600;">TastyTrade</span>'
+        f'<span style="background:{mode_color}; color:#fff; padding:2px 8px; '
+        f'border-radius:4px; font-size:0.75rem; font-weight:600;">{mode_label}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
-if st.sidebar.button("Load Account", key="load_tt"):
-    with st.sidebar:
-        with st.spinner("Connecting..."):
-            st.session_state.tt_account = load_tastytrade_account()
-
-if st.session_state.tt_account:
-    tt_data = st.session_state.tt_account
-    if "error" in tt_data:
-        st.sidebar.error(f"TastyTrade: {tt_data['error']}")
-    elif tt_data.get("accounts"):
+    if tt_data.get("accounts"):
         for acc in tt_data["accounts"]:
             st.sidebar.markdown(f"**Account:** `{acc['account_number']}`")
             sb_col1, sb_col2 = st.sidebar.columns(2)
             sb_col1.metric("Cash", f"${acc['cash_balance']:,.0f}")
             sb_col2.metric("Net Liq", f"${acc['net_liquidating_value']:,.0f}")
+    else:
+        st.sidebar.warning("No trading accounts found.")
 
 st.sidebar.caption("Theme: Settings (top-right) > Theme")
 
