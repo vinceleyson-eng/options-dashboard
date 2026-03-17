@@ -590,7 +590,7 @@ if page == "Daily Research":
         "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f%%", width="small"),
         "DTE": st.column_config.NumberColumn("DTE", format="%d days", width="small"),
         "Delta": st.column_config.NumberColumn("Delta", format="%.4f", width="small"),
-        "Exp Date": st.column_config.DateColumn("Exp Date", width="medium"),
+        "Exp Date": st.column_config.TextColumn("Exp Date", width="medium"),
         "POP %": st.column_config.NumberColumn("POP %", format="%.1f%%", width="small"),
         "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f%%", width="small"),
         "Strike": st.column_config.NumberColumn("Strike", format="$%.0f", width="small"),
