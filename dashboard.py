@@ -278,7 +278,8 @@ def build_options_dataframe(options, existing_option_ids):
     for o in options:
         has_position = o["id"] in existing_option_ids
         rows.append({
-            "Select": has_position or o.get("selected", False),
+            "Select": False,
+            "Status": "Active" if has_position else "",
             "Symbol": o.get("symbol", "-"),
             "Company": (o.get("name") or "-"),
             "IVR %": round(o["iv_rank"], 1) if o.get("iv_rank") is not None else None,
@@ -557,17 +558,18 @@ if page == "Daily Research":
         )
 
     # Display columns (hide internal columns)
-    display_cols = ["Select", "Symbol", "Company", "IVR %", "DTE", "Delta", "Exp Date",
+    display_cols = ["Select", "Status", "Symbol", "Company", "IVR %", "DTE", "Delta", "Exp Date",
                     "POP %", "P50 %", "Strike", "Bid", "Ask", "Spread", "Put Price",
                     "Underlying", "Earnings"]
 
     # Column config for st.data_editor
     column_config = {
-        "Select": st.column_config.CheckboxColumn(
+        "Select": st.column_config.ButtonColumn(
             "Select",
-            help="Tick to open trade confirmation",
+            help="Click to open trade confirmation dialog",
             width="small",
         ),
+        "Status": st.column_config.TextColumn("Status", width="small"),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
         "Company": st.column_config.TextColumn("Company", width="medium"),
         "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
@@ -592,25 +594,23 @@ if page == "Daily Research":
         width="stretch",
         hide_index=True,
         height=min(len(df) * 35 + 38, 800),
-        disabled=[c for c in display_cols if c != "Select"],
+        disabled=[c for c in display_cols if c not in ("Select",)],
         key="options_table",
     )
 
-    # Detect checkbox changes — open trade confirmation dialog
+    # Detect button clicks — open trade confirmation dialog
     if edited_df is not None:
         for idx in range(len(edited_df)):
-            new_selected = edited_df.iloc[idx]["Select"]
-            old_selected = df.iloc[idx]["Select"]
-            option_id = df.iloc[idx]["_id"]
-            has_position = df.iloc[idx]["_has_position"]
-
-            if new_selected and not old_selected and not has_position:
-                # Find the original option data
-                opt = next((o for o in filtered if o["id"] == option_id), None)
-                if opt:
-                    # Clear any previous dry-run state
-                    st.session_state.dry_run_result = None
-                    trade_confirmation_dialog(opt)
+            if edited_df.iloc[idx]["Select"]:
+                option_id = df.iloc[idx]["_id"]
+                has_position = df.iloc[idx]["_has_position"]
+                if has_position:
+                    st.toast("This option already has an active position.", icon="ℹ️")
+                else:
+                    opt = next((o for o in filtered if o["id"] == option_id), None)
+                    if opt:
+                        st.session_state.dry_run_result = None
+                        trade_confirmation_dialog(opt)
 
 
 # --- Open Positions Page ---
