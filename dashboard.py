@@ -541,7 +541,20 @@ if page == "Daily Research":
     ascending = sort_by in ["Symbol", "Delta", "DTE"]
     df = df.sort_values(by=sort_col, ascending=ascending, na_position="last").reset_index(drop=True)
 
-    st.subheader(f"Options — {selected_date} ({len(df)} rows)")
+    col_hdr, col_export = st.columns([3, 1])
+    with col_hdr:
+        st.subheader(f"Options — {selected_date} ({len(df)} rows)")
+    with col_export:
+        export_cols = ["Symbol", "Company", "IVR %", "DTE", "Delta", "Exp Date",
+                       "POP %", "P50 %", "Strike", "Bid", "Ask", "Spread",
+                       "Put Price", "Underlying", "Earnings"]
+        st.download_button(
+            label="Export CSV",
+            data=df[export_cols].to_csv(index=False),
+            file_name=f"options_{selected_date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     # Display columns (hide internal columns)
     display_cols = ["Select", "Symbol", "Company", "IVR %", "DTE", "Delta", "Exp Date",
@@ -612,7 +625,7 @@ elif page == "Open Positions":
         st.stop()
 
     # Summary metrics
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         st.metric("Open Positions", len(positions))
     with col2:
@@ -637,15 +650,26 @@ elif page == "Open Positions":
         })
 
     pos_df = pd.DataFrame(pos_rows)
-    st.dataframe(
-        pos_df,
-        column_config={
-            "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
-            "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
-        },
-        width="stretch",
-        hide_index=True,
-    )
+
+    col_tbl, col_exp = st.columns([3, 1])
+    with col_tbl:
+        st.dataframe(
+            pos_df,
+            column_config={
+                "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+                "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
+            },
+            width="stretch",
+            hide_index=True,
+        )
+    with col_exp:
+        st.download_button(
+            label="Export CSV",
+            data=pos_df.to_csv(index=False),
+            file_name=f"open_positions_{date.today()}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     st.divider()
 
@@ -735,15 +759,25 @@ elif page == "Position History":
                 "Closed": str(pos.get("closed_at", ""))[:10] if pos.get("closed_at") else "-",
             })
         hist_df = pd.DataFrame(hist_rows)
-        st.dataframe(
-            hist_df,
-            column_config={
-                "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
-                "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
-            },
-            width="stretch",
-            hide_index=True,
-        )
+        col_tbl, col_exp = st.columns([3, 1])
+        with col_tbl:
+            st.dataframe(
+                hist_df,
+                column_config={
+                    "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+                    "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
+                },
+                width="stretch",
+                hide_index=True,
+            )
+        with col_exp:
+            st.download_button(
+                label="Export CSV",
+                data=hist_df.to_csv(index=False),
+                file_name=f"position_history_{date.today()}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
     else:
         st.info("No positions match your filter.")
 
