@@ -1,5 +1,8 @@
 supabase
 python-dotenv
+google-auth
+google-api-python-client
 streamlit
-pandas
 tastytrade
+scipy
+numpy

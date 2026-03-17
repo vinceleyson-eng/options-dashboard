@@ -606,7 +606,7 @@ if page == "Daily Research":
     edited_df = st.data_editor(
         df[display_cols],
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=min(len(df) * 36 + 40, 700),
         disabled=[c for c in display_cols if c != "Select"],
