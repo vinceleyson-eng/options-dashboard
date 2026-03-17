@@ -69,13 +69,13 @@ def load_tastytrade_account():
         mode = get_tastytrade_mode()
 
         async def _fetch():
-            accounts = await Account.get(session)
+            accounts = await asyncio.wait_for(Account.get(session), timeout=10)
             if not accounts:
                 return {"mode": mode, "accounts": []}
 
             account_list = []
             for acc in accounts:
-                balances = await acc.get_balances(session)
+                balances = await asyncio.wait_for(acc.get_balances(session), timeout=10)
                 account_list.append({
                     "account_number": acc.account_number,
                     "cash_balance": float(balances.cash_balance or 0),
@@ -131,11 +131,11 @@ def place_trade_on_tastytrade(option_data, quantity=1, dry_run=True):
     )
 
     async def _place():
-        accounts = await Account.get(session)
+        accounts = await asyncio.wait_for(Account.get(session), timeout=15)
         if not accounts:
             return {"error": "No trading accounts found"}
         acc = accounts[0]
-        result = await acc.place_order(session, order, dry_run=dry_run)
+        result = await asyncio.wait_for(acc.place_order(session, order, dry_run=dry_run), timeout=15)
         return {
             "success": True,
             "dry_run": dry_run,
