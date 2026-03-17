@@ -179,19 +179,56 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- CSS Enhancements (works with both light & dark Streamlit themes) ---
+# --- CSS Enhancements ---
 st.markdown("""
 <style>
+    /* Typography */
     h1 { font-size: 1.8rem !important; }
     h2 { font-size: 1.3rem !important; }
     h3 { font-size: 1.1rem !important; }
+
+    /* Metric cards */
     [data-testid="stMetric"] {
         border-radius: 8px;
         padding: 12px 16px;
-        border: 1px solid rgba(128, 128, 128, 0.2);
+        border: 1px solid rgba(128, 128, 128, 0.15);
+        background: var(--secondary-background-color);
     }
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
-    .stDataFrame { border-radius: 8px; overflow: hidden; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; opacity: 0.7; }
+
+    /* Data tables */
+    .stDataFrame, [data-testid="stDataFrame"] {
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid rgba(128, 128, 128, 0.15);
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        border-right: 1px solid rgba(128, 128, 128, 0.15);
+    }
+    [data-testid="stSidebar"] .stMarkdown p {
+        color: inherit;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        border-radius: 6px;
+        font-weight: 500;
+    }
+
+    /* Expanders */
+    [data-testid="stExpander"] {
+        border-radius: 8px;
+        border: 1px solid rgba(128, 128, 128, 0.15);
+    }
+
+    /* Dividers */
+    hr { opacity: 0.2; }
+
+    /* Caption */
+    .stCaption { opacity: 0.6; font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -230,6 +267,14 @@ def load_position_snapshots(position_id):
     sb = get_supabase()
     result = sb.table("position_snapshots").select("*").eq("position_id", position_id).order("snapshot_date", desc=True).execute()
     return result.data
+
+
+def run_live_scan():
+    """Run a live scan against TastyTrade and return results (not saved to Supabase)."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tasty-trade"))
+    from daily_scan import scan_all
+    return asyncio.run(scan_all())
 
 
 def toggle_selection(option_id, selected):
@@ -379,7 +424,8 @@ def trade_confirmation_dialog(option):
                         order_status = live_result.get("status")
 
                         # Record in Supabase
-                        toggle_selection(option["id"], True)
+                        if option.get("id"):
+                            toggle_selection(option["id"], True)
                         create_position(option, order_id=order_id, order_status=order_status)
 
                         st.session_state.dry_run_result = None
@@ -434,12 +480,169 @@ st.sidebar.divider()
 
 page = st.sidebar.radio(
     "Navigate",
-    ["Daily Research", "Open Positions", "Position History", "Config"],
+    ["Live Feed", "Daily Research", "Open Positions", "Position History", "Config"],
     index=0,
 )
 
+# --- Live Feed Page ---
+if page == "Live Feed":
+    st.title("Live Option Feed")
+    st.caption(f"Today is {date.today().strftime('%A, %B %d, %Y')}")
+
+    # Session state for live scan results
+    if "live_scan_data" not in st.session_state:
+        st.session_state.live_scan_data = None
+    if "live_scan_time" not in st.session_state:
+        st.session_state.live_scan_time = None
+
+    # Controls row
+    col_btn, col_status = st.columns([1, 3])
+    with col_btn:
+        run_scan = st.button("Run Live Scan", type="primary", use_container_width=True)
+    with col_status:
+        if st.session_state.live_scan_time:
+            age_secs = (datetime.now() - st.session_state.live_scan_time).total_seconds()
+            age_str = f"{int(age_secs // 60)}m {int(age_secs % 60)}s ago" if age_secs >= 60 else f"{int(age_secs)}s ago"
+            st.info(f"Last scan: {st.session_state.live_scan_time.strftime('%H:%M:%S')} ({age_str})")
+        else:
+            st.info("No scan run yet this session. Click 'Run Live Scan' to fetch live data from TastyTrade.")
+
+    if run_scan:
+        with st.spinner("Scanning TastyTrade for options... this takes 2-4 minutes"):
+            try:
+                data = run_live_scan()
+                st.session_state.live_scan_data = data
+                st.session_state.live_scan_time = datetime.now()
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Scan failed: {e}")
+
+    if st.session_state.live_scan_data:
+        data = st.session_state.live_scan_data
+        options = data.get("options", [])
+
+        # Header metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Scan Date", data.get("date", "-"))
+        with col2:
+            st.metric("VIX", f"{data['vix']:.2f}" if data.get("vix") else "N/A")
+        with col3:
+            st.metric("Risk-Free Rate", f"{data['risk_free_rate']:.4f}" if data.get("risk_free_rate") else "N/A")
+        with col4:
+            st.metric("Options Found", len(options))
+
+        st.divider()
+
+        if not options:
+            st.info("No options matched the filters. Try adjusting delta/DTE range in Config.")
+            st.stop()
+
+        # Filters
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            symbols = sorted(set(o["symbol"] for o in options))
+            selected_symbols = st.multiselect("Filter by Symbol", symbols, default=symbols, key="live_sym_filter")
+        with col_f2:
+            show_selected_only = st.checkbox("Show selected only", value=False, key="live_show_sel")
+        with col_f3:
+            sort_by = st.selectbox("Sort by", ["Symbol", "IVR %", "POP %", "P50 %", "Delta", "DTE"], index=0, key="live_sort")
+
+        filtered = [o for o in options if o["symbol"] in selected_symbols]
+
+        # For checkbox state — check existing positions
+        existing_positions = load_all_positions()
+        existing_symbols_strikes = {
+            (p["symbol"], str(p["strike"]), p["exp_date"])
+            for p in existing_positions if p.get("symbol")
+        }
+
+        # Build rows (live options don't have UUIDs — use index as key)
+        rows = []
+        for i, o in enumerate(filtered):
+            already_selected = (o["symbol"], str(o.get("strike", "")), o.get("exp_date", "")) in existing_symbols_strikes
+            rows.append({
+                "Select": already_selected,
+                "Symbol": o.get("symbol", "-"),
+                "Company": o.get("name") or "-",
+                "IVR %": round(o["iv_rank"], 1) if o.get("iv_rank") is not None else None,
+                "DTE": o.get("dte"),
+                "Delta": round(o["delta"], 4) if o.get("delta") is not None else None,
+                "Exp Date": o.get("exp_date", "-"),
+                "POP %": round(o["pop"], 1) if o.get("pop") is not None else None,
+                "P50 %": round(o["p50"], 1) if o.get("p50") is not None else None,
+                "Strike": o.get("strike"),
+                "Bid": o.get("bid"),
+                "Ask": o.get("ask"),
+                "Spread": o.get("bid_ask_spread"),
+                "Put Price": o.get("put_price"),
+                "Underlying": o.get("underlying_price"),
+                "Earnings": o.get("earnings", "-"),
+                "_idx": i,
+            })
+
+        live_df = pd.DataFrame(rows)
+
+        if show_selected_only:
+            live_df = live_df[live_df["Select"] == True]
+
+        sort_col_map = {"Symbol": "Symbol", "IVR %": "IVR %", "POP %": "POP %", "P50 %": "P50 %", "Delta": "Delta", "DTE": "DTE"}
+        sort_col = sort_col_map.get(sort_by, "Symbol")
+        ascending = sort_by in ["Symbol", "Delta", "DTE"]
+        live_df = live_df.sort_values(by=sort_col, ascending=ascending, na_position="last").reset_index(drop=True)
+
+        display_cols = ["Select", "Symbol", "Company", "IVR %", "DTE", "Delta", "Exp Date",
+                        "POP %", "P50 %", "Strike", "Bid", "Ask", "Spread", "Put Price",
+                        "Underlying", "Earnings"]
+
+        st.subheader(f"Live Options — {data.get('date', '')} ({len(live_df)} rows)")
+
+        column_config = {
+            "Select": st.column_config.CheckboxColumn("Select", help="Tick to open trade confirmation", width="small"),
+            "Symbol": st.column_config.TextColumn("Symbol", width="small"),
+            "Company": st.column_config.TextColumn("Company", width="large"),
+            "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f%%", width="small"),
+            "DTE": st.column_config.NumberColumn("DTE", format="%d days", width="small"),
+            "Delta": st.column_config.NumberColumn("Delta", format="%.4f", width="small"),
+            "Exp Date": st.column_config.TextColumn("Exp Date", width="medium"),
+            "POP %": st.column_config.NumberColumn("POP %", format="%.1f%%", width="small"),
+            "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f%%", width="small"),
+            "Strike": st.column_config.NumberColumn("Strike", format="$%.0f", width="small"),
+            "Bid": st.column_config.NumberColumn("Bid", format="$%.2f", width="small"),
+            "Ask": st.column_config.NumberColumn("Ask", format="$%.2f", width="small"),
+            "Spread": st.column_config.NumberColumn("Spread", format="$%.2f", width="small"),
+            "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
+            "Underlying": st.column_config.NumberColumn("Underlying $", format="$%.2f", width="small"),
+            "Earnings": st.column_config.TextColumn("Earnings", width="small"),
+        }
+
+        edited_live_df = st.data_editor(
+            live_df[display_cols],
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            height=min(len(live_df) * 36 + 40, 700),
+            disabled=[c for c in display_cols if c != "Select"],
+            key="live_options_table",
+        )
+
+        # Detect checkbox → trade confirmation
+        if edited_live_df is not None:
+            for idx in range(len(edited_live_df)):
+                new_sel = edited_live_df.iloc[idx]["Select"]
+                old_sel = live_df.iloc[idx]["Select"]
+                if new_sel and not old_sel:
+                    orig_idx = live_df.iloc[idx]["_idx"]
+                    opt = filtered[orig_idx]
+                    # Live options don't have a Supabase ID — pass as-is for trade dialog
+                    opt["id"] = None
+                    st.session_state.dry_run_result = None
+                    trade_confirmation_dialog(opt)
+
+
 # --- Daily Research Page ---
-if page == "Daily Research":
+elif page == "Daily Research":
     st.title("Daily Option Research")
     st.caption(f"Today is {date.today().strftime('%A, %B %d, %Y')}")
 
@@ -547,19 +750,19 @@ if page == "Daily Research":
             width="small",
         ),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
-        "Company": st.column_config.TextColumn("Company", width="medium"),
-        "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
-        "DTE": st.column_config.NumberColumn("DTE", format="%d", width="small"),
+        "Company": st.column_config.TextColumn("Company", width="large"),
+        "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f%%", width="small"),
+        "DTE": st.column_config.NumberColumn("DTE", format="%d days", width="small"),
         "Delta": st.column_config.NumberColumn("Delta", format="%.4f", width="small"),
-        "Exp Date": st.column_config.TextColumn("Exp Date", width="small"),
-        "POP %": st.column_config.NumberColumn("POP %", format="%.1f", width="small"),
-        "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f", width="small"),
-        "Strike": st.column_config.NumberColumn("Strike", format="%.0f", width="small"),
+        "Exp Date": st.column_config.DateColumn("Exp Date", width="medium"),
+        "POP %": st.column_config.NumberColumn("POP %", format="%.1f%%", width="small"),
+        "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f%%", width="small"),
+        "Strike": st.column_config.NumberColumn("Strike", format="$%.0f", width="small"),
         "Bid": st.column_config.NumberColumn("Bid", format="$%.2f", width="small"),
         "Ask": st.column_config.NumberColumn("Ask", format="$%.2f", width="small"),
         "Spread": st.column_config.NumberColumn("Spread", format="$%.2f", width="small"),
         "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
-        "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f", width="medium"),
+        "Underlying": st.column_config.NumberColumn("Underlying $", format="$%.2f", width="small"),
         "Earnings": st.column_config.TextColumn("Earnings", width="small"),
     }
 
@@ -567,9 +770,9 @@ if page == "Daily Research":
     edited_df = st.data_editor(
         df[display_cols],
         column_config=column_config,
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
-        height=min(len(df) * 35 + 38, 800),
+        height=min(len(df) * 36 + 40, 700),
         disabled=[c for c in display_cols if c != "Select"],
         key="options_table",
     )
