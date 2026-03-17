@@ -278,7 +278,7 @@ def build_options_dataframe(options, existing_option_ids):
     for o in options:
         has_position = o["id"] in existing_option_ids
         rows.append({
-            "Status": "Active" if has_position else "",
+            "Select": has_position or o.get("selected", False),
             "Symbol": o.get("symbol", "-"),
             "Company": (o.get("name") or "-"),
             "IVR %": round(o["iv_rank"], 1) if o.get("iv_rank") is not None else None,
@@ -556,68 +556,52 @@ if page == "Daily Research":
             use_container_width=True,
         )
 
-    # Paginated table with per-row Select buttons
-    PAGE_SIZE = 25
-    if "dr_page" not in st.session_state:
-        st.session_state.dr_page = 0
-    total_pages = max(1, (len(df) + PAGE_SIZE - 1) // PAGE_SIZE)
-    pg = min(st.session_state.dr_page, total_pages - 1)
-    start = pg * PAGE_SIZE
-    page_df = df.iloc[start:start + PAGE_SIZE]
+    # Display columns
+    display_cols = ["Select", "Symbol", "Company", "IVR %", "DTE", "Delta", "Exp Date",
+                    "POP %", "P50 %", "Strike", "Bid", "Ask", "Spread", "Put Price",
+                    "Underlying", "Earnings"]
 
-    # Column proportions & headers
-    COL_W = [1.2, 0.8, 1.6, 0.7, 0.6, 0.7, 1.0, 0.7, 0.7, 0.7, 0.8, 1.0]
-    HEADERS = ["Select", "Symbol", "Company", "IVR %", "DTE", "Delta",
-               "Exp Date", "POP %", "P50 %", "Strike", "Put $", "Underlying"]
+    column_config = {
+        "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
+        "Symbol": st.column_config.TextColumn("Symbol", width="small"),
+        "Company": st.column_config.TextColumn("Company", width="medium"),
+        "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
+        "DTE": st.column_config.NumberColumn("DTE", format="%d", width="small"),
+        "Delta": st.column_config.NumberColumn("Delta", format="%.4f", width="small"),
+        "Exp Date": st.column_config.TextColumn("Exp Date", width="small"),
+        "POP %": st.column_config.NumberColumn("POP %", format="%.1f", width="small"),
+        "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f", width="small"),
+        "Strike": st.column_config.NumberColumn("Strike", format="%.0f", width="small"),
+        "Bid": st.column_config.NumberColumn("Bid", format="$%.2f", width="small"),
+        "Ask": st.column_config.NumberColumn("Ask", format="$%.2f", width="small"),
+        "Spread": st.column_config.NumberColumn("Spread", format="$%.2f", width="small"),
+        "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
+        "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f", width="medium"),
+        "Earnings": st.column_config.TextColumn("Earnings", width="small"),
+    }
 
-    # Header row
-    hdr = st.columns(COL_W)
-    for col, h in zip(hdr, HEADERS):
-        col.markdown(f"**{h}**")
-    st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
+    edited_df = st.data_editor(
+        df[display_cols],
+        column_config=column_config,
+        use_container_width=True,
+        hide_index=True,
+        height=min(len(df) * 35 + 38, 800),
+        disabled=[c for c in display_cols if c != "Select"],
+        key="options_table",
+    )
 
-    # Data rows
-    for _, row in page_df.iterrows():
-        opt_id = row["_id"]
-        has_pos = row["_has_position"]
-        opt_data = next((o for o in filtered if o["id"] == opt_id), None)
-
-        r = st.columns(COL_W)
-        if has_pos:
-            r[0].button("Active", key=f"sel_{opt_id}", disabled=True, use_container_width=True)
-        else:
-            if r[0].button("Select", key=f"sel_{opt_id}", type="primary", use_container_width=True):
-                st.session_state.dry_run_result = None
-                trade_confirmation_dialog(opt_data)
-
-        r[1].write(row["Symbol"])
-        r[2].write(row["Company"])
-        r[3].write(f"{row['IVR %']:.0f}%" if pd.notna(row["IVR %"]) else "-")
-        r[4].write(str(int(row["DTE"])) if pd.notna(row["DTE"]) else "-")
-        r[5].write(f"{row['Delta']:.4f}" if pd.notna(row["Delta"]) else "-")
-        r[6].write(row["Exp Date"])
-        r[7].write(f"{row['POP %']:.0f}%" if pd.notna(row["POP %"]) else "-")
-        r[8].write(f"{row['P50 %']:.0f}%" if pd.notna(row["P50 %"]) else "-")
-        r[9].write(f"${row['Strike']:.0f}" if pd.notna(row["Strike"]) else "-")
-        r[10].write(f"${row['Put Price']:.2f}" if pd.notna(row["Put Price"]) else "-")
-        r[11].write(f"${row['Underlying']:.2f}" if pd.notna(row["Underlying"]) else "-")
-
-    # Pagination controls
-    st.markdown("<hr style='margin:8px 0;'>", unsafe_allow_html=True)
-    p1, p2, p3 = st.columns([1, 2, 1])
-    with p1:
-        if st.button("← Prev", disabled=pg == 0, key="dr_prev"):
-            st.session_state.dr_page -= 1
-            st.rerun()
-    with p2:
-        st.markdown(
-            f"<p style='text-align:center; margin:6px 0;'>Page {pg + 1} of {total_pages}</p>",
-            unsafe_allow_html=True,
-        )
-    with p3:
-        if st.button("Next →", disabled=pg >= total_pages - 1, key="dr_next"):
-            st.session_state.dr_page += 1
-            st.rerun()
+    # Detect checkbox → open trade dialog
+    if edited_df is not None:
+        for idx in range(len(edited_df)):
+            new_sel = edited_df.iloc[idx]["Select"]
+            old_sel = df.iloc[idx]["Select"]
+            option_id = df.iloc[idx]["_id"]
+            has_position = df.iloc[idx]["_has_position"]
+            if new_sel and not old_sel and not has_position:
+                opt = next((o for o in filtered if o["id"] == option_id), None)
+                if opt:
+                    st.session_state.dry_run_result = None
+                    trade_confirmation_dialog(opt)
 
 
 # --- Open Positions Page ---
