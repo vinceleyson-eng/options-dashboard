@@ -400,33 +400,38 @@ def trade_confirmation_dialog(option):
 st.sidebar.title("Options Dashboard")
 st.sidebar.markdown(f"**Today:** {date.today().strftime('%A, %B %d, %Y')}")
 
-# TastyTrade Account Info
-tt_data = load_tastytrade_account()
-if "error" in tt_data:
-    st.sidebar.error(f"TastyTrade: {tt_data['error']}")
-else:
-    mode = tt_data["mode"]
-    is_sandbox = mode == "sandbox"
-    mode_label = "SANDBOX" if is_sandbox else "LIVE"
-    mode_color = "#f0ad4e" if is_sandbox else "#5cb85c"
+# TastyTrade Account Info — lazy loaded on button click
+mode = get_tastytrade_mode()
+is_sandbox = mode == "sandbox"
+mode_label = "SANDBOX" if is_sandbox else "LIVE"
+mode_color = "#f0ad4e" if is_sandbox else "#5cb85c"
+st.sidebar.markdown(
+    f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">'
+    f'<span style="font-weight:600;">TastyTrade</span>'
+    f'<span style="background:{mode_color}; color:#fff; padding:2px 8px; '
+    f'border-radius:4px; font-size:0.75rem; font-weight:600;">{mode_label}</span>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
 
-    st.sidebar.markdown(
-        f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">'
-        f'<span style="font-weight:600;">TastyTrade</span>'
-        f'<span style="background:{mode_color}; color:#fff; padding:2px 8px; '
-        f'border-radius:4px; font-size:0.75rem; font-weight:600;">{mode_label}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+if "tt_account" not in st.session_state:
+    st.session_state.tt_account = None
 
-    if tt_data["accounts"]:
+if st.sidebar.button("Load Account", key="load_tt"):
+    with st.sidebar:
+        with st.spinner("Connecting..."):
+            st.session_state.tt_account = load_tastytrade_account()
+
+if st.session_state.tt_account:
+    tt_data = st.session_state.tt_account
+    if "error" in tt_data:
+        st.sidebar.error(f"TastyTrade: {tt_data['error']}")
+    elif tt_data.get("accounts"):
         for acc in tt_data["accounts"]:
             st.sidebar.markdown(f"**Account:** `{acc['account_number']}`")
             sb_col1, sb_col2 = st.sidebar.columns(2)
             sb_col1.metric("Cash", f"${acc['cash_balance']:,.0f}")
             sb_col2.metric("Net Liq", f"${acc['net_liquidating_value']:,.0f}")
-    else:
-        st.sidebar.warning("No trading accounts found.")
 
 st.sidebar.caption("Theme: Settings (top-right) > Theme")
 
