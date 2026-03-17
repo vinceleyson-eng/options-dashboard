@@ -69,13 +69,13 @@ def load_tastytrade_account():
         mode = get_tastytrade_mode()
 
         async def _fetch():
-            accounts = await asyncio.wait_for(Account.get(session), timeout=10)
+            accounts = await Account.get(session)
             if not accounts:
                 return {"mode": mode, "accounts": []}
 
             account_list = []
             for acc in accounts:
-                balances = await asyncio.wait_for(acc.get_balances(session), timeout=10)
+                balances = await acc.get_balances(session)
                 account_list.append({
                     "account_number": acc.account_number,
                     "cash_balance": float(balances.cash_balance or 0),
@@ -131,11 +131,11 @@ def place_trade_on_tastytrade(option_data, quantity=1, dry_run=True):
     )
 
     async def _place():
-        accounts = await asyncio.wait_for(Account.get(session), timeout=15)
+        accounts = await Account.get(session)
         if not accounts:
             return {"error": "No trading accounts found"}
         acc = accounts[0]
-        result = await asyncio.wait_for(acc.place_order(session, order, dry_run=dry_run), timeout=15)
+        result = await acc.place_order(session, order, dry_run=dry_run)
         return {
             "success": True,
             "dry_run": dry_run,
@@ -179,56 +179,19 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- CSS Enhancements ---
+# --- CSS Enhancements (works with both light & dark Streamlit themes) ---
 st.markdown("""
 <style>
-    /* Typography */
     h1 { font-size: 1.8rem !important; }
     h2 { font-size: 1.3rem !important; }
     h3 { font-size: 1.1rem !important; }
-
-    /* Metric cards */
     [data-testid="stMetric"] {
         border-radius: 8px;
         padding: 12px 16px;
-        border: 1px solid rgba(128, 128, 128, 0.15);
-        background: var(--secondary-background-color);
+        border: 1px solid rgba(128, 128, 128, 0.2);
     }
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
-    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; opacity: 0.7; }
-
-    /* Data tables */
-    .stDataFrame, [data-testid="stDataFrame"] {
-        border-radius: 8px;
-        overflow: hidden;
-        border: 1px solid rgba(128, 128, 128, 0.15);
-    }
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        border-right: 1px solid rgba(128, 128, 128, 0.15);
-    }
-    [data-testid="stSidebar"] .stMarkdown p {
-        color: inherit;
-    }
-
-    /* Buttons */
-    .stButton > button {
-        border-radius: 6px;
-        font-weight: 500;
-    }
-
-    /* Expanders */
-    [data-testid="stExpander"] {
-        border-radius: 8px;
-        border: 1px solid rgba(128, 128, 128, 0.15);
-    }
-
-    /* Dividers */
-    hr { opacity: 0.2; }
-
-    /* Caption */
-    .stCaption { opacity: 0.6; font-size: 0.8rem; }
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -267,7 +230,6 @@ def load_position_snapshots(position_id):
     sb = get_supabase()
     result = sb.table("position_snapshots").select("*").eq("position_id", position_id).order("snapshot_date", desc=True).execute()
     return result.data
-
 
 
 def toggle_selection(option_id, selected):
@@ -417,8 +379,7 @@ def trade_confirmation_dialog(option):
                         order_status = live_result.get("status")
 
                         # Record in Supabase
-                        if option.get("id"):
-                            toggle_selection(option["id"], True)
+                        toggle_selection(option["id"], True)
                         create_position(option, order_id=order_id, order_status=order_status)
 
                         st.session_state.dry_run_result = None
@@ -586,19 +547,19 @@ if page == "Daily Research":
             width="small",
         ),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
-        "Company": st.column_config.TextColumn("Company", width="large"),
-        "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f%%", width="small"),
-        "DTE": st.column_config.NumberColumn("DTE", format="%d days", width="small"),
+        "Company": st.column_config.TextColumn("Company", width="medium"),
+        "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
+        "DTE": st.column_config.NumberColumn("DTE", format="%d", width="small"),
         "Delta": st.column_config.NumberColumn("Delta", format="%.4f", width="small"),
-        "Exp Date": st.column_config.TextColumn("Exp Date", width="medium"),
-        "POP %": st.column_config.NumberColumn("POP %", format="%.1f%%", width="small"),
-        "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f%%", width="small"),
-        "Strike": st.column_config.NumberColumn("Strike", format="$%.0f", width="small"),
+        "Exp Date": st.column_config.TextColumn("Exp Date", width="small"),
+        "POP %": st.column_config.NumberColumn("POP %", format="%.1f", width="small"),
+        "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f", width="small"),
+        "Strike": st.column_config.NumberColumn("Strike", format="%.0f", width="small"),
         "Bid": st.column_config.NumberColumn("Bid", format="$%.2f", width="small"),
         "Ask": st.column_config.NumberColumn("Ask", format="$%.2f", width="small"),
         "Spread": st.column_config.NumberColumn("Spread", format="$%.2f", width="small"),
         "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
-        "Underlying": st.column_config.NumberColumn("Underlying $", format="$%.2f", width="small"),
+        "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f", width="medium"),
         "Earnings": st.column_config.TextColumn("Earnings", width="small"),
     }
 
@@ -608,7 +569,7 @@ if page == "Daily Research":
         column_config=column_config,
         width="stretch",
         hide_index=True,
-        height=min(len(df) * 36 + 40, 700),
+        height=min(len(df) * 35 + 38, 800),
         disabled=[c for c in display_cols if c != "Select"],
         key="options_table",
     )
