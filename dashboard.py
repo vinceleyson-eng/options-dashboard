@@ -295,7 +295,6 @@ def add_position_to_sheets(option):
     """Create a new tab in the Google Sheets Position Tracker matching existing format."""
     try:
         service = get_google_sheets_service()
-        service = build("sheets", "v4", credentials=creds)
 
         symbol = option["symbol"]
         strike = int(option["strike"])
