@@ -21,6 +21,10 @@ from supabase import create_client
 
 load_dotenv()
 
+# Google Sheets Position Tracker
+POSITION_TRACKER_SHEET_ID = "1F2jvkbnAFDMZQ_BbMXyVLVFgAutKrZ2QMSUKzy0RUXE"
+SA_PATH = "C:/Users/acer/.claude/credentials/google-service-account.json"
+
 
 def get_secret(key, default=None):
     """Get secret from Streamlit Cloud secrets or .env fallback."""
@@ -80,9 +84,13 @@ def load_tastytrade_account():
                     balances = await asyncio.wait_for(acc.get_balances(session), timeout=8)
                     account_list.append({
                         "account_number": acc.account_number,
+                        "account_type": getattr(acc, "account_type_name", "N/A"),
+                        "margin_type": getattr(acc, "margin_or_cash", "N/A"),
                         "cash_balance": float(balances.cash_balance or 0),
                         "net_liquidating_value": float(balances.net_liquidating_value or 0),
                         "equity_buying_power": float(balances.equity_buying_power or 0),
+                        "option_buying_power": float(getattr(balances, "derivative_buying_power", 0) or 0),
+                        "maintenance_requirement": float(getattr(balances, "maintenance_requirement", 0) or 0),
                     })
                 return {"mode": mode, "accounts": account_list}
 
@@ -264,6 +272,170 @@ def create_position(option, order_id=None, order_status=None):
     return result.data[0] if result.data else None
 
 
+def add_position_to_sheets(option):
+    """Create a new tab in the Google Sheets Position Tracker matching existing format."""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+
+        creds = service_account.Credentials.from_service_account_file(
+            SA_PATH, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        service = build("sheets", "v4", credentials=creds)
+
+        symbol = option["symbol"]
+        strike = int(option["strike"])
+        tab_name = f"POS-{symbol}-{strike}P"
+
+        # Colors
+        DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
+        LIGHT_GRAY = {"red": 0.949, "green": 0.949, "blue": 0.949}
+        WHITE_BG = {"red": 1, "green": 1, "blue": 1}
+        WHITE_TEXT = {"red": 1, "green": 1, "blue": 1}
+        BORDER_CLR = {"red": 0.698, "green": 0.698, "blue": 0.698}
+        THIN = {"style": "SOLID", "width": 1, "color": BORDER_CLR}
+        ALL_BORDERS = {"top": THIN, "bottom": THIN, "left": THIN, "right": THIN}
+
+        # Create the new tab
+        add_result = service.spreadsheets().batchUpdate(
+            spreadsheetId=POSITION_TRACKER_SHEET_ID,
+            body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
+        ).execute()
+        sheet_id = add_result["replies"][0]["addSheet"]["properties"]["sheetId"]
+
+        # Convert exp_date to Google Sheets serial date number
+        exp_str = option.get("exp_date", "")
+        exp_serial = None
+        if exp_str:
+            from datetime import datetime as _dt
+            exp_dt = _dt.strptime(exp_str, "%Y-%m-%d")
+            exp_serial = (exp_dt - _dt(1899, 12, 30)).days
+
+        put_price = option.get("put_price", 0) or 0
+
+        # Build updateCells requests for formatted content
+        requests = []
+
+        # --- Row 1: Title (merged, dark blue, white bold, font 13) ---
+        requests.append({"mergeCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 8},
+            "mergeType": "MERGE_ALL",
+        }})
+        title_fmt = {
+            "backgroundColor": DARK_BLUE,
+            "horizontalAlignment": "CENTER",
+            "textFormat": {"foregroundColor": WHITE_TEXT, "fontSize": 13, "bold": True},
+        }
+        requests.append({"updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 1},
+            "rows": [{"values": [{"userEnteredValue": {"stringValue": f"Position: {option.get('name', symbol)} ({symbol}) \u2014 {strike} Put"}, "userEnteredFormat": title_fmt}]}],
+            "fields": "userEnteredValue,userEnteredFormat",
+        }})
+
+        # --- Row 2: Symbol, Name, Strike, Price Paid ---
+        row2_cells = [
+            {"userEnteredValue": {"stringValue": "Symbol:"}, "userEnteredFormat": {"textFormat": {"bold": True}}},
+            {"userEnteredValue": {"stringValue": symbol}},
+            {"userEnteredValue": {"stringValue": "Name:"}},
+            {"userEnteredValue": {"stringValue": option.get("name", symbol)}},
+            {"userEnteredValue": {"stringValue": "Strike:"}},
+            {"userEnteredValue": {"numberValue": strike}},
+            {"userEnteredValue": {"stringValue": "Price Paid:"}},
+            {"userEnteredValue": {"numberValue": float(put_price)}},
+        ]
+        requests.append({"updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 8},
+            "rows": [{"values": row2_cells}],
+            "fields": "userEnteredValue,userEnteredFormat",
+        }})
+
+        # --- Row 3: Expiration (as date), Quantity, Direction ---
+        exp_cell = {"userEnteredValue": {"numberValue": exp_serial}, "userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}} if exp_serial else {"userEnteredValue": {"stringValue": exp_str}}
+        row3_cells = [
+            {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": {"textFormat": {"bold": True}}},
+            exp_cell,
+            {"userEnteredValue": {"stringValue": "Quantity:"}},
+            {"userEnteredValue": {"numberValue": 1}},
+            {"userEnteredValue": {"stringValue": "Direction:"}},
+            {"userEnteredValue": {"stringValue": "Short"}},
+        ]
+        requests.append({"updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3, "startColumnIndex": 0, "endColumnIndex": 6},
+            "rows": [{"values": row3_cells}],
+            "fields": "userEnteredValue,userEnteredFormat",
+        }})
+
+        # --- Row 5: Header row (dark blue, white bold, borders, centered, font 10) ---
+        headers = ["Date", "DTE", "Share Price", "Last", "Strike", "Difference", "Option Price", "P&L"]
+        hdr_fmt = {
+            "backgroundColor": DARK_BLUE,
+            "borders": ALL_BORDERS,
+            "horizontalAlignment": "CENTER",
+            "textFormat": {"foregroundColor": WHITE_TEXT, "fontSize": 10, "bold": True},
+        }
+        hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
+        requests.append({"updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5, "startColumnIndex": 0, "endColumnIndex": 8},
+            "rows": [{"values": hdr_cells}],
+            "fields": "userEnteredValue,userEnteredFormat",
+        }})
+
+        # --- Row 6: First data row (light gray bg, borders, centered, number formats) ---
+        from datetime import datetime as _dt2
+        today_serial = (_dt2.now() - _dt2(1899, 12, 30)).days
+        dte_val = option.get("dte", 0) or 0
+        share_price = option.get("underlying_price", 0) or 0
+        last_price = float(put_price)
+        difference = round(float(share_price) - float(strike), 2) if share_price else 0
+        option_price = last_price  # same as price paid on day 1
+        pl = 0.00  # just opened
+
+        data_fmt = {
+            "backgroundColor": LIGHT_GRAY,
+            "borders": ALL_BORDERS,
+            "horizontalAlignment": "CENTER",
+            "verticalAlignment": "MIDDLE",
+            "textFormat": {"fontSize": 10},
+        }
+        num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+        date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
+
+        row6_cells = [
+            {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
+            {"userEnteredValue": {"numberValue": dte_val}, "userEnteredFormat": data_fmt},
+            {"userEnteredValue": {"numberValue": float(share_price)}, "userEnteredFormat": num_fmt},
+            {"userEnteredValue": {"numberValue": last_price}, "userEnteredFormat": num_fmt},
+            {"userEnteredValue": {"numberValue": float(strike)}, "userEnteredFormat": data_fmt},
+            {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
+            {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
+            {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
+        ]
+        requests.append({"updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 5, "endRowIndex": 6, "startColumnIndex": 0, "endColumnIndex": 8},
+            "rows": [{"values": row6_cells}],
+            "fields": "userEnteredValue,userEnteredFormat",
+        }})
+
+        # --- Set column widths ---
+        col_widths = [110, 60, 100, 80, 80, 100, 100, 80]
+        for i, w in enumerate(col_widths):
+            requests.append({"updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+                "properties": {"pixelSize": w},
+                "fields": "pixelSize",
+            }})
+
+        # Execute all formatting
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=POSITION_TRACKER_SHEET_ID,
+            body={"requests": requests},
+        ).execute()
+
+        return {"success": True, "tab_name": tab_name}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def close_position(position_id):
     sb = get_supabase()
     sb.table("positions").update({
@@ -333,16 +505,40 @@ def trade_confirmation_dialog(option):
 
     st.divider()
 
-    # Step 1: Dry-run validation
+    # Action buttons — two paths
+    btn_col1, btn_col2 = st.columns(2)
+
+    # Path 1: Track Position (manual — Google Sheets + Supabase)
+    with btn_col1:
+        if st.button("Track Position", type="primary", use_container_width=True,
+                      help="Add to Google Sheets Position Tracker + Supabase (no order placed)"):
+            with st.spinner("Adding to Position Tracker..."):
+                sheet_result = add_position_to_sheets(option)
+                if "error" in sheet_result:
+                    st.error(f"Sheets error: {sheet_result['error']}")
+                else:
+                    # Also record in Supabase
+                    toggle_selection(option["id"], True)
+                    create_position(option)
+                    st.cache_data.clear()
+                    st.success(
+                        f"Position tracked! {option['symbol']} {option['strike']:.0f} Put\n\n"
+                        f"Sheet tab: **{sheet_result['tab_name']}**"
+                    )
+                    st.balloons()
+
+    # Path 2: Validate & Place Order (TastyTrade)
+    with btn_col2:
+        if st.button("Validate Order (Dry Run)", type="secondary", use_container_width=True,
+                      help="Validate order with TastyTrade before placing"):
+            with st.spinner("Validating order with TastyTrade..."):
+                result = place_trade_on_tastytrade(option, quantity=1, dry_run=True)
+                st.session_state.dry_run_result = result
+
+    # Show dry-run results
     if "dry_run_result" not in st.session_state:
         st.session_state.dry_run_result = None
 
-    if st.button("Validate Order (Dry Run)", type="secondary", use_container_width=True):
-        with st.spinner("Validating order with TastyTrade..."):
-            result = place_trade_on_tastytrade(option, quantity=1, dry_run=True)
-            st.session_state.dry_run_result = result
-
-    # Show dry-run results
     if st.session_state.dry_run_result:
         result = st.session_state.dry_run_result
 
@@ -374,7 +570,7 @@ def trade_confirmation_dialog(option):
 
             st.divider()
 
-            # Step 2: Confirm & place real order
+            # Confirm & place real order
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("Confirm & Place Order", type="primary", use_container_width=True):
