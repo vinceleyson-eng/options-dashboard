@@ -272,15 +272,29 @@ def create_position(option, order_id=None, order_status=None):
     return result.data[0] if result.data else None
 
 
-def add_position_to_sheets(option):
-    """Create a new tab in the Google Sheets Position Tracker matching existing format."""
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
+def get_google_sheets_service():
+    """Get authenticated Google Sheets service — Streamlit secrets or local file."""
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
 
+    try:
+        # Streamlit Cloud: read from secrets
+        sa_info = dict(st.secrets["google_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            sa_info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+    except (KeyError, FileNotFoundError):
+        # Local: read from file
         creds = service_account.Credentials.from_service_account_file(
             SA_PATH, scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
+    return build("sheets", "v4", credentials=creds)
+
+
+def add_position_to_sheets(option):
+    """Create a new tab in the Google Sheets Position Tracker matching existing format."""
+    try:
+        service = get_google_sheets_service()
         service = build("sheets", "v4", credentials=creds)
 
         symbol = option["symbol"]
