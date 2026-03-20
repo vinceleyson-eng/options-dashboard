@@ -100,6 +100,39 @@ Custom web dashboard for daily options trading research and position management.
 | pl | numeric | Unrealized P&L ($) |
 | created_at | timestamptz | |
 
+### `shadow_positions` — Auto-created for every scan option (analytics)
+| Column | Type | Notes |
+|--------|------|-------|
+| id | uuid | PK |
+| scan_option_id | uuid | FK → scan_options.id |
+| scan_date | date | Date of the scan |
+| symbol | text | |
+| name | text | |
+| strike | numeric | |
+| exp_date | date | |
+| put_price | numeric | Premium at scan time |
+| underlying_price | numeric | |
+| delta | numeric | |
+| iv_rank | numeric | |
+| pop | numeric | |
+| p50 | numeric | |
+| dte | integer | |
+| created_at | timestamptz | |
+
+### `shadow_snapshots` — Daily P&L tracking for shadow positions
+| Column | Type | Notes |
+|--------|------|-------|
+| id | uuid | PK |
+| shadow_position_id | uuid | FK → shadow_positions.id (CASCADE) |
+| snapshot_date | date | |
+| dte | integer | |
+| share_price | numeric | |
+| option_price | numeric | |
+| strike | numeric | |
+| difference | numeric | |
+| pl | numeric | |
+| created_at | timestamptz | |
+
 ### `config` — Scanner configuration (replaces Google Sheets Config tab)
 | Column | Type | Notes |
 |--------|------|-------|
@@ -118,7 +151,7 @@ Custom web dashboard for daily options trading research and position management.
 
 ## Key Files (this folder)
 - `dashboard.py` — Streamlit app (run with `streamlit run dashboard.py`)
-- `push_to_supabase.py` — pushes scan_results.json to Supabase (replaces push_to_sheets.py)
+- `push_to_supabase.py` — pushes scan_results.json to Supabase + auto-creates shadow positions
 - `migrate_sheets_to_supabase.py` — one-time migration from Google Sheets (already run)
 - `schema.sql` — database schema (already applied)
 - `.env` — Supabase + Tastytrade credentials
@@ -150,8 +183,8 @@ python push_to_supabase.py
 - Mar 17: 113 options (backfilled POP/P50 with default IV=0.6)
 - Mar 9-16: 219+ options across 6 dates
 
-## Scan Data Columns (15 + checkbox)
-Symbol, Name, IVR, DTE, Delta, Exp Date, POP, P50, Strike, Bid, Ask, Bid-Ask, Put Price, Earnings, Underlying Price, **Select** (checkbox)
+## Scan Data Columns (Stan's display order, 2026-03-20)
+**Select** (checkbox), Symbol, Company, **Strike, Put Price, DTE, POP**, IVR, Delta, Exp Date, P50, Bid, Ask, Spread, Underlying, Earnings
 
 ## Scanner Rules
 - **Monthly expirations only** — weeklies filtered out (Stan's requirement 2026-03-16)
@@ -176,7 +209,8 @@ Symbol, Name, IVR, DTE, Delta, Exp Date, POP, P50, Strike, Bid, Ask, Bid-Ask, Pu
   3. "Validate Order" button → dry-run on TastyTrade, shows buying power impact + fees
   4. "Confirm & Place Order" button → executes real order, records in Supabase
   5. "Cancel" button → closes dialog without action
-- **Google Sheets Position Tracker** — new tabs created with exact formatting: dark blue headers, borders, alternating row colors, number formats, first data row auto-populated with Date/DTE/Share Price/Strike/Option Price/P&L
+- **Google Sheets Position Tracker** — one tab per symbol (e.g., `POS-ADBE`), appends new rows when same symbol tracked again. Format: dark blue headers, borders, number formats. Columns: Date, Strike, Premium, DTE, Share Price, Expiration, Difference, Option Price, P&L
+- **Shadow database** — auto-creates `shadow_positions` for every option in each scan (for analytics). Separate from user-selected `positions`. Backfilled 618 rows across 9 dates.
 - **Order type:** Sell-to-Open short put, Limit at mid price (put_price), Day order, Qty 1
 - **Filter by symbol**, sort by IVR/POP/P50/Delta/DTE, show selected only
 - **Position cards** with expandable daily P&L snapshots, close position button
@@ -200,15 +234,23 @@ Symbol, Name, IVR, DTE, Delta, Exp Date, POP, P50, Strike, Bid, Ask, Bid-Ask, Pu
 - Theme: uses Streamlit native theming (not CSS override) — CSS can't reach data_editor iframe
 - Google Sheets kept as backup: n8n pushes to both Supabase and Sheets on each scan
 
-## n8n Workflows
+## Automation — Windows Scheduled Task
+- **Task name:** "Options Dashboard - Daily Scan" (in Windows Task Scheduler)
+- **Schedule:** Mon–Fri at 10:00 PM GMT+8 (= 10:00 AM ET, US market open)
+- **Script:** `daily_scan_cron.bat` → runs `daily_scan.py` then `push_to_supabase.py`
+- **Logs:** `options-dashboard/logs/scan_YYYYMMDD.log`
+- **Requires:** Laptop on and awake at 10 PM; skips if missed
+- **Replaces:** n8n workflows (had issues)
+
+## n8n Workflows (deprecated — replaced by Windows Task Scheduler)
 - **Location:** `../tasty-trade/n8n/`
 - `tastytrade_daily_scan.json` — Cron trigger (weekdays 10:00 AM ET) → daily scan + push
 - `tastytrade_position_tracker.json` — Position tracking workflow
-- Import into n8n via Workflows > Import from file
 
 ## Known Issues
 - **tasty-trade/.env** was missing Supabase credentials — caused daily_scan.py config load to fail. Fixed 2026-03-18.
 - **Mar 17 data** had null POP/P50/underlying_price — backfilled with default IV=0.6 (approximate). Future scans use live Greeks.
+- **Bid/Ask null outside market hours** — scanner only gets real bid/ask quotes during market hours (9:30 AM–4:00 PM ET). Pre-market scans will have null bid/ask but valid put_price (theo price). Scheduled task runs at 10 AM ET to avoid this.
 - **Sandbox Cash account** has $0 equity buying power for naked puts — may need Reg T margin upgrade
 
 ## Next Steps
