@@ -198,7 +198,7 @@ python push_to_supabase.py
 3. **Moomoo Paper Trading** — checkbox also places order in Moomoo paper trade (waiting Stan's specs)
 
 ## Dashboard Features (v2.0)
-- **4 pages:** Daily Research, Open Positions, Position History, Config
+- **5 pages:** Daily Research, Open Positions, Position History, Shadow Positions, Config
 - **Calendar date picker** in sidebar (snaps to nearest available scan date)
 - **Light/Dark theme** via Streamlit native settings (hamburger menu > Settings > Theme)
 - **Data table** using `st.data_editor` — spreadsheet-style grid with checkboxes, dollar formatting, scrollable
@@ -215,6 +215,7 @@ python push_to_supabase.py
 - **Filter by symbol**, sort by IVR/POP/P50/Delta/DTE, show selected only
 - **Position cards** with expandable daily P&L snapshots, close position button
 - **CSV export buttons** on Daily Research (`options_{date}.csv`), Open Positions (`open_positions_{today}.csv`), Position History (`position_history_{today}.csv`) — added 2026-03-17
+- **Shadow Positions page** — browse all auto-tracked positions, filter by symbol/date, summary by symbol (avg premium, avg POP, avg delta, scan dates), CSV export. Added 2026-03-20.
 - **Select column** — `CheckboxColumn` (not a button). Streamlit has no `ButtonColumn` — per-row buttons break horizontal scroll. Checkbox ticked → trade dialog opens. This is the only scrollable per-row interaction Streamlit supports.
 
 ## Trading Flow (Phase 2)
