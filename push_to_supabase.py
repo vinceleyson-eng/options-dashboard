@@ -148,11 +148,38 @@ def main():
         })
 
     # Insert in batches of 50
+    inserted_options = []
     for i in range(0, len(option_rows), 50):
         batch = option_rows[i:i+50]
-        sb.table("scan_options").insert(batch).execute()
+        result = sb.table("scan_options").insert(batch).execute()
+        inserted_options.extend(result.data)
 
     print(f"Inserted {len(option_rows)} option rows for {scan_date}")
+
+    # --- Shadow positions: auto-create for every scan option (analytics) ---
+    shadow_rows = []
+    for opt in inserted_options:
+        shadow_rows.append({
+            "scan_option_id": opt["id"],
+            "scan_date": scan_date,
+            "symbol": opt["symbol"],
+            "name": opt.get("name"),
+            "strike": opt["strike"],
+            "exp_date": opt.get("exp_date"),
+            "put_price": opt.get("put_price"),
+            "underlying_price": opt.get("underlying_price"),
+            "delta": opt.get("delta"),
+            "iv_rank": opt.get("iv_rank"),
+            "pop": opt.get("pop"),
+            "p50": opt.get("p50"),
+            "dte": opt.get("dte"),
+        })
+
+    for i in range(0, len(shadow_rows), 50):
+        batch = shadow_rows[i:i+50]
+        sb.table("shadow_positions").insert(batch).execute()
+
+    print(f"Created {len(shadow_rows)} shadow positions for analytics")
     print("Done!")
 
 
