@@ -681,7 +681,7 @@ st.sidebar.divider()
 
 page = st.sidebar.radio(
     "Navigate",
-    ["Daily Research", "Open Positions", "Position History", "Config"],
+    ["Daily Research", "Open Positions", "Position History", "Shadow Positions", "Config"],
     index=0,
 )
 
@@ -1009,6 +1009,129 @@ elif page == "Position History":
             )
     else:
         st.info("No positions match your filter.")
+
+
+# --- Shadow Positions Page ---
+elif page == "Shadow Positions":
+    st.title("Shadow Positions (Analytics)")
+    st.caption("Auto-tracked positions for every option in each scan — for performance analysis")
+
+    sb = get_supabase()
+
+    # Load all shadow positions
+    @st.cache_data(ttl=30)
+    def load_shadow_positions(symbol_filter=None, date_filter=None):
+        query = sb.table("shadow_positions").select("*").order("scan_date", desc=True)
+        if symbol_filter:
+            query = query.eq("symbol", symbol_filter)
+        if date_filter:
+            query = query.eq("scan_date", date_filter)
+        return query.execute().data
+
+    # Get available symbols and dates for filters
+    all_shadow = sb.table("shadow_positions").select("symbol, scan_date").execute().data
+    if not all_shadow:
+        st.info("No shadow positions yet. They are auto-created when scans are pushed.")
+        st.stop()
+
+    available_symbols = sorted(set(s["symbol"] for s in all_shadow))
+    available_dates = sorted(set(s["scan_date"] for s in all_shadow), reverse=True)
+
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Shadow Positions", len(all_shadow))
+    col2.metric("Symbols", len(available_symbols))
+    col3.metric("Scan Dates", len(available_dates))
+
+    st.divider()
+
+    # Filters
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        sym_filter = st.selectbox("Filter by Symbol", ["All"] + available_symbols, index=0)
+    with col_f2:
+        date_filter = st.selectbox("Filter by Scan Date", ["All"] + available_dates, index=0)
+
+    # Load filtered data
+    sym_val = sym_filter if sym_filter != "All" else None
+    date_val = date_filter if date_filter != "All" else None
+    shadow_data = load_shadow_positions(sym_val, date_val)
+
+    if not shadow_data:
+        st.info("No shadow positions match your filters.")
+        st.stop()
+
+    # Build DataFrame
+    shadow_rows = []
+    for sp in shadow_data:
+        shadow_rows.append({
+            "Scan Date": sp["scan_date"],
+            "Symbol": sp["symbol"],
+            "Company": sp.get("name", "-"),
+            "Strike": sp.get("strike"),
+            "Premium": sp.get("put_price"),
+            "DTE": sp.get("dte"),
+            "POP %": round(sp["pop"], 1) if sp.get("pop") is not None else None,
+            "IVR %": round(sp["iv_rank"], 1) if sp.get("iv_rank") is not None else None,
+            "Delta": round(sp["delta"], 4) if sp.get("delta") is not None else None,
+            "Exp Date": sp.get("exp_date", "-"),
+            "Underlying": sp.get("underlying_price"),
+            "P50 %": round(sp["p50"], 1) if sp.get("p50") is not None else None,
+        })
+
+    shadow_df = pd.DataFrame(shadow_rows)
+
+    col_hdr, col_exp = st.columns([3, 1])
+    with col_hdr:
+        st.subheader(f"Shadow Positions ({len(shadow_df)} rows)")
+    with col_exp:
+        st.download_button(
+            label="Export CSV",
+            data=shadow_df.to_csv(index=False),
+            file_name=f"shadow_positions_{date.today()}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    st.dataframe(
+        shadow_df,
+        column_config={
+            "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+            "Premium": st.column_config.NumberColumn("Premium", format="$%.2f"),
+            "DTE": st.column_config.NumberColumn("DTE", format="%d"),
+            "POP %": st.column_config.NumberColumn("POP %", format="%.1f"),
+            "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f"),
+            "Delta": st.column_config.NumberColumn("Delta", format="%.4f"),
+            "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f"),
+            "P50 %": st.column_config.NumberColumn("P50 %", format="%.1f"),
+        },
+        use_container_width=True,
+        hide_index=True,
+        height=min(len(shadow_df) * 35 + 38, 800),
+    )
+
+    # Symbol summary
+    st.divider()
+    st.subheader("Summary by Symbol")
+    if not shadow_df.empty:
+        summary = shadow_df.groupby("Symbol").agg(
+            Positions=("Symbol", "count"),
+            Avg_Premium=("Premium", "mean"),
+            Avg_POP=("POP %", "mean"),
+            Avg_Delta=("Delta", "mean"),
+            Scan_Dates=("Scan Date", "nunique"),
+        ).round(2).reset_index()
+        summary.columns = ["Symbol", "Positions", "Avg Premium", "Avg POP %", "Avg Delta", "Scan Dates"]
+        st.dataframe(
+            summary,
+            column_config={
+                "Avg Premium": st.column_config.NumberColumn("Avg Premium", format="$%.2f"),
+                "Avg POP %": st.column_config.NumberColumn("Avg POP %", format="%.1f"),
+                "Avg Delta": st.column_config.NumberColumn("Avg Delta", format="%.4f"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 # --- Config Page ---
