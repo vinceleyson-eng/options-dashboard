@@ -372,10 +372,11 @@ def add_position_to_sheets(option):
         if tab_exists:
             sheet_id = existing_tabs[tab_name]
 
-            # Read existing data to find next row and check for duplicates
+            # Read existing data (formatted values so dates come back as strings)
             result = service.spreadsheets().values().get(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
                 range=f"'{tab_name}'!A:B",
+                valueRenderOption="FORMATTED_VALUE",
             ).execute()
             existing_rows = result.get("values", [])
             next_row = len(existing_rows)
