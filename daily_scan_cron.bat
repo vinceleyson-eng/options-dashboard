@@ -8,4 +8,7 @@ python daily_scan.py >> "%~dp0logs\scan_%date:~-4%%date:~4,2%%date:~7,2%.log" 2>
 cd /d "G:\Other computers\My Laptop\Upwork\Stan\options-dashboard"
 python push_to_supabase.py >> "%~dp0logs\scan_%date:~-4%%date:~4,2%%date:~7,2%.log" 2>&1
 
-echo [%date% %time%] Scan complete >> "%~dp0logs\scan_%date:~-4%%date:~4,2%%date:~7,2%.log"
+cd /d "G:\Other computers\My Laptop\Upwork\Stan\options-dashboard"
+python position_tracker_daily.py >> "%~dp0logs\scan_%date:~-4%%date:~4,2%%date:~7,2%.log" 2>&1
+
+echo [%date% %time%] Scan + tracker complete >> "%~dp0logs\scan_%date:~-4%%date:~4,2%%date:~7,2%.log"
