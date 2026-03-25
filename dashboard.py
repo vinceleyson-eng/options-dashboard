@@ -291,11 +291,21 @@ def get_google_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
+def build_occ_symbol(symbol, exp_date, strike):
+    """Build OSI/OCC option symbol: SYMBOL  YYMMDDP00STRIKE000."""
+    exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
+    exp_code = exp_dt.strftime("%y%m%d")
+    strike_code = f"{int(float(strike) * 1000):08d}"
+    return f"{symbol:<6}{exp_code}P{strike_code}"
+
+
 def add_position_to_sheets(option):
     """Add position to Google Sheets Position Tracker.
 
     One tab per symbol (e.g., POS-ADBE). If tab exists, append a new position row.
     If tab doesn't exist, create it with headers and first row.
+    Includes OCC symbol (OSI standard) for each contract.
+    Deduplicates: won't add if same OCC + date already exists.
     """
     try:
         service = get_google_sheets_service()
@@ -303,6 +313,7 @@ def add_position_to_sheets(option):
         symbol = option["symbol"]
         strike = int(option["strike"])
         tab_name = f"POS-{symbol}"
+        occ = build_occ_symbol(symbol, option["exp_date"], option["strike"])
 
         # Colors & formatting constants
         DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
@@ -324,6 +335,13 @@ def add_position_to_sheets(option):
         share_price = option.get("underlying_price", 0) or 0
         difference = round(float(share_price) - float(strike), 2) if share_price else 0
         today_serial = (_dt.now() - _dt(1899, 12, 30)).days
+        today_str = date.today().isoformat()
+
+        exp_str = option.get("exp_date", "")
+        exp_serial = None
+        if exp_str:
+            exp_dt = _dt.strptime(exp_str, "%Y-%m-%d")
+            exp_serial = (exp_dt - _dt(1899, 12, 30)).days
 
         # Data row formatting
         data_fmt = {
@@ -335,25 +353,11 @@ def add_position_to_sheets(option):
         }
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
+        text_fmt = {**data_fmt, "textFormat": {"fontSize": 9}}
 
-        if tab_exists:
-            sheet_id = existing_tabs[tab_name]
-
-            # Find next empty row by reading existing data
-            result = service.spreadsheets().values().get(
-                spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:A",
-            ).execute()
-            next_row = len(result.get("values", []))  # 0-indexed for API
-
-            # Append new position row with formatting
-            exp_str = option.get("exp_date", "")
-            exp_serial = None
-            if exp_str:
-                exp_dt = _dt.strptime(exp_str, "%Y-%m-%d")
-                exp_serial = (exp_dt - _dt(1899, 12, 30)).days
-
-            new_row_cells = [
+        def _build_data_row():
+            return [
+                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": text_fmt},
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
                 {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
@@ -365,9 +369,28 @@ def add_position_to_sheets(option):
                 {"userEnteredValue": {"numberValue": 0.00}, "userEnteredFormat": num_fmt},
             ]
 
+        if tab_exists:
+            sheet_id = existing_tabs[tab_name]
+
+            # Read existing data to find next row and check for duplicates
+            result = service.spreadsheets().values().get(
+                spreadsheetId=POSITION_TRACKER_SHEET_ID,
+                range=f"'{tab_name}'!A:B",
+            ).execute()
+            existing_rows = result.get("values", [])
+            next_row = len(existing_rows)
+
+            # Deduplicate: check if same OCC + date already exists
+            for row in existing_rows:
+                if len(row) >= 2 and row[0] == occ and row[1] == today_str:
+                    return {"success": True, "tab_name": tab_name, "action": "already_exists",
+                            "occ": occ, "message": f"{occ} already tracked on {today_str}"}
+
+            # Append new position row
             requests = [{"updateCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1, "startColumnIndex": 0, "endColumnIndex": 9},
-                "rows": [{"values": new_row_cells}],
+                "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "rows": [{"values": _build_data_row()}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }}]
 
@@ -376,7 +399,7 @@ def add_position_to_sheets(option):
                 body={"requests": requests},
             ).execute()
 
-            return {"success": True, "tab_name": tab_name, "action": "appended"}
+            return {"success": True, "tab_name": tab_name, "action": "appended", "occ": occ}
 
         else:
             # Create new tab
@@ -386,17 +409,11 @@ def add_position_to_sheets(option):
             ).execute()
             sheet_id = add_result["replies"][0]["addSheet"]["properties"]["sheetId"]
 
-            exp_str = option.get("exp_date", "")
-            exp_serial = None
-            if exp_str:
-                exp_dt = _dt.strptime(exp_str, "%Y-%m-%d")
-                exp_serial = (exp_dt - _dt(1899, 12, 30)).days
-
             requests = []
 
             # --- Row 1: Title (merged, dark blue, white bold, font 13) ---
             requests.append({"mergeCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 9},
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 10},
                 "mergeType": "MERGE_ALL",
             }})
             title_fmt = {
@@ -426,7 +443,7 @@ def add_position_to_sheets(option):
             }})
 
             # --- Row 4: Header row (dark blue, white bold) ---
-            headers = ["Date", "Strike", "Premium", "DTE", "Share Price", "Expiration", "Difference", "Option Price", "P&L"]
+            headers = ["OCC Symbol", "Date", "Strike", "Premium", "DTE", "Share Price", "Expiration", "Difference", "Option Price", "P&L"]
             hdr_fmt = {
                 "backgroundColor": DARK_BLUE,
                 "borders": ALL_BORDERS,
@@ -435,31 +452,20 @@ def add_position_to_sheets(option):
             }
             hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
             requests.append({"updateCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 3, "endRowIndex": 4, "startColumnIndex": 0, "endColumnIndex": 9},
+                "range": {"sheetId": sheet_id, "startRowIndex": 3, "endRowIndex": 4, "startColumnIndex": 0, "endColumnIndex": 10},
                 "rows": [{"values": hdr_cells}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
             # --- Row 5: First data row ---
-            row5_cells = [
-                {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
-                {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": dte_val}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": float(share_price)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": exp_serial or 0}, "userEnteredFormat": date_fmt} if exp_serial else {"userEnteredValue": {"stringValue": exp_str}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": 0.00}, "userEnteredFormat": num_fmt},
-            ]
             requests.append({"updateCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5, "startColumnIndex": 0, "endColumnIndex": 9},
-                "rows": [{"values": row5_cells}],
+                "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5, "startColumnIndex": 0, "endColumnIndex": 10},
+                "rows": [{"values": _build_data_row()}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
             # --- Set column widths ---
-            col_widths = [110, 70, 90, 60, 100, 100, 90, 100, 80]
+            col_widths = [180, 100, 70, 90, 60, 100, 100, 90, 100, 80]
             for i, w in enumerate(col_widths):
                 requests.append({"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
@@ -472,7 +478,7 @@ def add_position_to_sheets(option):
                 body={"requests": requests},
             ).execute()
 
-            return {"success": True, "tab_name": tab_name, "action": "created"}
+            return {"success": True, "tab_name": tab_name, "action": "created", "occ": occ}
 
     except Exception as e:
         return {"error": str(e)}
@@ -559,15 +565,20 @@ def trade_confirmation_dialog(option):
                 if "error" in sheet_result:
                     st.error(f"Sheets error: {sheet_result['error']}")
                 else:
-                    # Also record in Supabase
-                    toggle_selection(option["id"], True)
-                    create_position(option)
-                    st.cache_data.clear()
-                    st.success(
-                        f"Position tracked! {option['symbol']} {option['strike']:.0f} Put\n\n"
-                        f"Sheet tab: **{sheet_result['tab_name']}**"
-                    )
-                    st.balloons()
+                    if sheet_result.get("action") == "already_exists":
+                        st.warning(sheet_result.get("message", "Already tracked"))
+                    else:
+                        # Record in Supabase
+                        toggle_selection(option["id"], True)
+                        create_position(option)
+                        st.cache_data.clear()
+                        occ = sheet_result.get("occ", "")
+                        st.success(
+                            f"Position tracked! {option['symbol']} {option['strike']:.0f} Put\n\n"
+                            f"OCC: **{occ}**\n\n"
+                            f"Sheet tab: **{sheet_result['tab_name']}**"
+                        )
+                        st.balloons()
 
     # Path 2: Validate & Place Order (TastyTrade)
     with btn_col2:
