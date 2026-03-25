@@ -45,6 +45,31 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
+def build_tab_name(symbol, strike, exp_date, existing_tabs):
+    """Build per-contract tab name (e.g., POS-ADBE-225P).
+
+    If same symbol+strike has different expirations, add suffix (e.g., POS-LULU-140P-0417).
+    """
+    strike_int = int(float(strike))
+    base = f"POS-{symbol}-{strike_int}P"
+
+    if base in existing_tabs:
+        return base
+
+    conflict = False
+    for tab in existing_tabs:
+        if tab.startswith(base) and tab != base:
+            conflict = True
+            break
+
+    if conflict:
+        exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
+        suffix = exp_dt.strftime("%m%d")
+        return f"{base}-{suffix}"
+
+    return base
+
+
 def build_streamer_symbol(symbol, exp_date, strike):
     """Build DXLink streamer symbol for option quotes."""
     exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
@@ -298,26 +323,29 @@ def push_snapshots_to_sheets(results):
         for r in results:
             pos = r["position"]
             symbol = pos["symbol"]
-            tab_name = f"POS-{symbol}"
+            strike = float(pos["strike"])
+            exp_date = pos["exp_date"]
+            price_paid = float(pos.get("price_paid", 0) or 0)
+
+            tab_name = build_tab_name(symbol, strike, exp_date, existing_tabs)
 
             if tab_name not in existing_tabs:
                 print(f"  Sheets: no tab {tab_name}, skipping")
                 continue
 
             sheet_id = existing_tabs[tab_name]
-            occ = build_occ_symbol(symbol, pos["exp_date"], pos["strike"])
 
-            # Check for existing row (dedup)
+            # Read existing dates (col A = Date) to dedup
             existing = sheets_service.spreadsheets().values().get(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:B",
+                range=f"'{tab_name}'!A:A",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute()
             existing_rows = existing.get("values", [])
 
             already_in_sheet = False
             for row in existing_rows:
-                if len(row) >= 2 and row[0] == occ and row[1] == today_str:
+                if len(row) >= 1 and row[0] == today_str:
                     already_in_sheet = True
                     break
 
@@ -325,29 +353,36 @@ def push_snapshots_to_sheets(results):
                 continue
 
             next_row = len(existing_rows)
-            strike = int(pos["strike"])
-            price_paid = float(pos.get("price_paid", 0) or 0)
-            exp_str = pos["exp_date"]
-            exp_serial = (datetime.strptime(exp_str, "%Y-%m-%d") - datetime(1899, 12, 30)).days
 
+            # Get entry option price (first data row, col F = Option Price)
+            entry_result = sheets_service.spreadsheets().values().get(
+                spreadsheetId=POSITION_TRACKER_SHEET_ID,
+                range=f"'{tab_name}'!F6",
+                valueRenderOption="UNFORMATTED_VALUE",
+            ).execute()
+            entry_vals = entry_result.get("values", [])
+            entry_option_price = float(entry_vals[0][0]) if entry_vals and entry_vals[0] else price_paid
+
+            # P&L = (Entry Option Price - Current Option Price) × 100
+            option_price = float(r["option_price"] or 0)
+            pl = round((entry_option_price - option_price) * 100, 2) if option_price else 0
+
+            # 7 columns: Date, DTE, Share Price, Strike, Difference, Option Price, P&L
             row_cells = [
-                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": text_fmt},
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
-                {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": price_paid}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": r["dte"] or 0}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(r["share_price"] or 0)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": exp_serial}, "userEnteredFormat": date_fmt},
+                {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(r["difference"] or 0)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": float(r["option_price"] or 0)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": float(r["pl"] or 0)}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
             ]
 
             sheets_service.spreadsheets().batchUpdate(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
                 body={"requests": [{"updateCells": {
                     "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
-                              "startColumnIndex": 0, "endColumnIndex": 10},
+                              "startColumnIndex": 0, "endColumnIndex": 7},
                     "rows": [{"values": row_cells}],
                     "fields": "userEnteredValue,userEnteredFormat",
                 }}]},

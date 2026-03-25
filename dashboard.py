@@ -299,21 +299,53 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
+def build_tab_name(symbol, strike, exp_date, existing_tabs):
+    """Build per-contract tab name (e.g., POS-ADBE-225P).
+
+    If same symbol+strike has different expirations, add suffix (e.g., POS-LULU-140P-0417).
+    """
+    strike_int = int(float(strike))
+    base = f"POS-{symbol}-{strike_int}P"
+
+    # Check if base name already exists with a different expiration
+    if base in existing_tabs:
+        return base  # Already exists, reuse it
+
+    # Check if there's a conflicting tab (same symbol+strike, different exp)
+    # e.g., POS-LULU-140P-0417 already exists and we're adding 0515
+    conflict = False
+    for tab in existing_tabs:
+        if tab.startswith(base) and tab != base:
+            conflict = True
+            break
+
+    if conflict or base in existing_tabs:
+        # Add expiration suffix
+        exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
+        suffix = exp_dt.strftime("%m%d")
+        return f"{base}-{suffix}"
+
+    return base
+
+
 def add_position_to_sheets(option):
     """Add position to Google Sheets Position Tracker.
 
-    One tab per symbol (e.g., POS-ADBE). If tab exists, append a new position row.
-    If tab doesn't exist, create it with headers and first row.
-    Includes OCC symbol (OSI standard) for each contract.
-    Deduplicates: won't add if same OCC + date already exists.
+    One tab per contract (e.g., POS-ADBE-225P). Each tab tracks one specific
+    strike over time with daily rows. Uses OCC/OSI standard for identification.
+    P&L = (Entry Option Price - Current Option Price) × 100.
     """
     try:
         service = get_google_sheets_service()
 
         symbol = option["symbol"]
         strike = int(option["strike"])
-        tab_name = f"POS-{symbol}"
         occ = build_occ_symbol(symbol, option["exp_date"], option["strike"])
+
+        # Get existing tabs
+        spreadsheet = service.spreadsheets().get(spreadsheetId=POSITION_TRACKER_SHEET_ID).execute()
+        existing_tabs = {s["properties"]["title"]: s["properties"]["sheetId"] for s in spreadsheet["sheets"]}
+        tab_name = build_tab_name(symbol, strike, option["exp_date"], existing_tabs)
 
         # Colors & formatting constants
         DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
@@ -323,9 +355,6 @@ def add_position_to_sheets(option):
         THIN = {"style": "SOLID", "width": 1, "color": BORDER_CLR}
         ALL_BORDERS = {"top": THIN, "bottom": THIN, "left": THIN, "right": THIN}
 
-        # Check if tab already exists
-        spreadsheet = service.spreadsheets().get(spreadsheetId=POSITION_TRACKER_SHEET_ID).execute()
-        existing_tabs = {s["properties"]["title"]: s["properties"]["sheetId"] for s in spreadsheet["sheets"]}
         tab_exists = tab_name in existing_tabs
 
         from datetime import datetime as _dt
@@ -356,14 +385,12 @@ def add_position_to_sheets(option):
         text_fmt = {**data_fmt, "textFormat": {"fontSize": 9}}
 
         def _build_data_row():
+            """7 columns: Date, DTE, Share Price, Strike, Difference, Option Price, P&L."""
             return [
-                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": text_fmt},
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
-                {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": dte_val}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(share_price)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": exp_serial or 0}, "userEnteredFormat": date_fmt} if exp_serial else {"userEnteredValue": {"stringValue": exp_str}, "userEnteredFormat": data_fmt},
+                {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": 0.00}, "userEnteredFormat": num_fmt},
@@ -372,25 +399,25 @@ def add_position_to_sheets(option):
         if tab_exists:
             sheet_id = existing_tabs[tab_name]
 
-            # Read existing data (formatted values so dates come back as strings)
+            # Read existing dates (col A = Date) to dedup
             result = service.spreadsheets().values().get(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:B",
+                range=f"'{tab_name}'!A:A",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute()
             existing_rows = result.get("values", [])
             next_row = len(existing_rows)
 
-            # Deduplicate: check if same OCC + date already exists
+            # Deduplicate: check if same date already exists in this contract tab
             for row in existing_rows:
-                if len(row) >= 2 and row[0] == occ and row[1] == today_str:
+                if len(row) >= 1 and row[0] == today_str:
                     return {"success": True, "tab_name": tab_name, "action": "already_exists",
                             "occ": occ, "message": f"{occ} already tracked on {today_str}"}
 
-            # Append new position row
+            # Append new daily row
             requests = [{"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
-                          "startColumnIndex": 0, "endColumnIndex": 10},
+                          "startColumnIndex": 0, "endColumnIndex": 7},
                 "rows": [{"values": _build_data_row()}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }}]
@@ -403,7 +430,7 @@ def add_position_to_sheets(option):
             return {"success": True, "tab_name": tab_name, "action": "appended", "occ": occ}
 
         else:
-            # Create new tab
+            # Create new per-contract tab
             add_result = service.spreadsheets().batchUpdate(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
                 body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
@@ -411,10 +438,11 @@ def add_position_to_sheets(option):
             sheet_id = add_result["replies"][0]["addSheet"]["properties"]["sheetId"]
 
             requests = []
+            info_bold = {"textFormat": {"bold": True}}
 
             # --- Row 1: Title (merged, dark blue, white bold, font 13) ---
             requests.append({"mergeCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 10},
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 7},
                 "mergeType": "MERGE_ALL",
             }})
             title_fmt = {
@@ -422,29 +450,46 @@ def add_position_to_sheets(option):
                 "horizontalAlignment": "CENTER",
                 "textFormat": {"foregroundColor": WHITE_TEXT, "fontSize": 13, "bold": True},
             }
+            name = option.get("name", symbol)
             requests.append({"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 1},
-                "rows": [{"values": [{"userEnteredValue": {"stringValue": f"Positions: {option.get('name', symbol)} ({symbol})"}, "userEnteredFormat": title_fmt}]}],
+                "rows": [{"values": [{"userEnteredValue": {"stringValue": f"Position: {name} ({symbol}) \u2014 {strike} Put"}, "userEnteredFormat": title_fmt}]}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # --- Row 2: Symbol info ---
+            # --- Row 2: Contract info ---
             row2_cells = [
-                {"userEnteredValue": {"stringValue": "Symbol:"}, "userEnteredFormat": {"textFormat": {"bold": True}}},
-                {"userEnteredValue": {"stringValue": symbol}},
-                {"userEnteredValue": {"stringValue": "Name:"}},
-                {"userEnteredValue": {"stringValue": option.get("name", symbol)}},
-                {"userEnteredValue": {"stringValue": "Direction:"}},
-                {"userEnteredValue": {"stringValue": "Short Put"}},
+                {"userEnteredValue": {"stringValue": "OCC Symbol:"}, "userEnteredFormat": info_bold},
+                {"userEnteredValue": {"stringValue": occ}},
+                {"userEnteredValue": {"stringValue": "Strike:"}, "userEnteredFormat": info_bold},
+                {"userEnteredValue": {"numberValue": strike}},
+                {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": info_bold},
+                {"userEnteredValue": {"stringValue": exp_str}},
+                {"userEnteredValue": {"stringValue": "Direction:"}, "userEnteredFormat": info_bold},
             ]
             requests.append({"updateCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 6},
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 7},
                 "rows": [{"values": row2_cells}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # --- Row 4: Header row (dark blue, white bold) ---
-            headers = ["OCC Symbol", "Date", "Strike", "Premium", "DTE", "Share Price", "Expiration", "Difference", "Option Price", "P&L"]
+            # --- Row 3: Entry info ---
+            row3_cells = [
+                {"userEnteredValue": {"stringValue": "Entry Premium:"}, "userEnteredFormat": info_bold},
+                {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}},
+                {"userEnteredValue": {"stringValue": "Entry Date:"}, "userEnteredFormat": info_bold},
+                {"userEnteredValue": {"stringValue": today_str}},
+                {"userEnteredValue": {"stringValue": "Direction:"}, "userEnteredFormat": info_bold},
+                {"userEnteredValue": {"stringValue": "Short Put"}},
+            ]
+            requests.append({"updateCells": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3, "startColumnIndex": 0, "endColumnIndex": 6},
+                "rows": [{"values": row3_cells}],
+                "fields": "userEnteredValue,userEnteredFormat",
+            }})
+
+            # --- Row 5: Header row (dark blue, white bold) ---
+            headers = ["Date", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L"]
             hdr_fmt = {
                 "backgroundColor": DARK_BLUE,
                 "borders": ALL_BORDERS,
@@ -453,20 +498,20 @@ def add_position_to_sheets(option):
             }
             hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
             requests.append({"updateCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 3, "endRowIndex": 4, "startColumnIndex": 0, "endColumnIndex": 10},
+                "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5, "startColumnIndex": 0, "endColumnIndex": 7},
                 "rows": [{"values": hdr_cells}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # --- Row 5: First data row ---
+            # --- Row 6: First data row (P&L = 0 on entry day) ---
             requests.append({"updateCells": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5, "startColumnIndex": 0, "endColumnIndex": 10},
+                "range": {"sheetId": sheet_id, "startRowIndex": 5, "endRowIndex": 6, "startColumnIndex": 0, "endColumnIndex": 7},
                 "rows": [{"values": _build_data_row()}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
             # --- Set column widths ---
-            col_widths = [180, 100, 70, 90, 60, 100, 100, 90, 100, 80]
+            col_widths = [100, 60, 100, 70, 90, 100, 80]
             for i, w in enumerate(col_widths):
                 requests.append({"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
