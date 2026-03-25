@@ -239,8 +239,13 @@ python push_to_supabase.py
 ## Automation — Windows Scheduled Task
 - **Task name:** "Options Dashboard - Daily Scan" (in Windows Task Scheduler)
 - **Schedule:** Mon–Fri at 10:00 PM GMT+8 (= 10:00 AM ET, US market open)
-- **Script:** `daily_scan_cron.bat` → runs `daily_scan.py` then `push_to_supabase.py`
+- **Script:** `daily_scan_cron.bat` → runs 3 steps:
+  1. `daily_scan.py` — scan TastyTrade for options
+  2. `push_to_supabase.py` — push scan data + create shadow positions
+  3. `position_tracker_daily.py` — fetch live prices, write P&L snapshots to Supabase + Google Sheets
+- **Python path:** Uses full path `C:\Users\acer\AppData\Local\Programs\Python\Python313\python.exe` (Task Scheduler doesn't inherit PATH)
 - **Logs:** `options-dashboard/logs/scan_YYYYMMDD.log`
+- **Monitoring:** Healthchecks.io (`https://hc-ping.com/052fc046-9af9-47aa-b04e-309917304c2b`) — pings /start at begin, /success or /fail at end. Alerts via email (vince.leyson@gmail.com) + Slack if cron misses 2-hour grace window.
 - **Requires:** Laptop on and awake at 10 PM; skips if missed
 - **Replaces:** n8n workflows (had issues)
 
@@ -256,7 +261,6 @@ python push_to_supabase.py
 - **Sandbox Cash account** has $0 equity buying power for naked puts — may need Reg T margin upgrade
 
 ## Next Steps
-- Set up daily position tracker to append rows to Google Sheets tabs (daily P&L snapshots)
-- Connect position_tracker.py to write snapshots to Supabase
-- Phase 3: Moomoo paper trading (after Stan's specs)
+- Stan reviews dashboard and workflow (in progress)
+- Phase 3 specs from Stan after manual tracking period
 - Consider upgrading sandbox account to Reg T margin (currently Cash — $0 buying power for naked puts)
