@@ -209,7 +209,10 @@ python push_to_supabase.py
   3. "Validate Order" button → dry-run on TastyTrade, shows buying power impact + fees
   4. "Confirm & Place Order" button → executes real order, records in Supabase
   5. "Cancel" button → closes dialog without action
-- **Google Sheets Position Tracker** — one tab per symbol (e.g., `POS-ADBE`), appends new rows when same symbol tracked again. Format: dark blue headers, borders, number formats. Columns: OCC Symbol, Date, Strike, Premium, DTE, Share Price, Expiration, Difference, Option Price, P&L
+- **Google Sheets Position Tracker** — one tab per **contract** (e.g., `POS-ADBE-225P`). Each tab tracks one specific strike over time with daily rows. If same symbol+strike has different expirations, suffix added (e.g., `POS-LULU-140P-0417`). Format: dark blue headers, borders, number formats.
+  - **Header:** Title, OCC Symbol, Strike, Expiration, Entry Premium, Entry Date, Direction
+  - **Columns:** Date, DTE, Share Price, Strike, Difference, Option Price, P&L
+  - **P&L formula:** `(Entry Option Price - Current Option Price) × 100` — always relative to first row's option price (Stan's requirement 2026-03-25)
 - **OCC/OSI symbol** — each position identified by standard 21-char code (e.g., `ADBE  260515P00225000`). Built by `build_occ_symbol()`. Dedup prevents same OCC+date from being inserted twice (uses `FORMATTED_VALUE` to read dates correctly from Sheets).
 - **Shadow database** — auto-creates `shadow_positions` for every option in each scan (for analytics). Separate from user-selected `positions`. Backfilled 618 rows across 9 dates.
 - **Order type:** Sell-to-Open short put, Limit at mid price (put_price), Day order, Qty 1
