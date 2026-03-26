@@ -45,9 +45,24 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
-def build_tab_name(symbol):
-    """Build per-symbol tab name (e.g., POS-ADBE)."""
-    return f"POS-{symbol}"
+def build_tab_name(symbol, strike, exp_date, existing_tabs):
+    """Build per-contract tab name (e.g., POS-ADBE-225P).
+
+    If same symbol+strike already exists with a different exp, add suffix.
+    """
+    strike_int = int(float(strike))
+    base = f"POS-{symbol}-{strike_int}P"
+
+    if base in existing_tabs:
+        return base
+
+    # Check for conflict (same base, different exp suffix)
+    for tab in existing_tabs:
+        if tab.startswith(base) and tab != base:
+            exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
+            return f"{base}-{exp_dt.strftime('%m%d')}"
+
+    return base
 
 
 def build_streamer_symbol(symbol, exp_date, strike):
@@ -277,7 +292,9 @@ def push_snapshots_to_sheets(results):
 
     Per-symbol tabs (POS-ADBE). 9 columns: Date, OCC, Strike, Exp, DTE,
     Share Price, Difference, Option Price, P&L.
-    P&L = today's option price - yesterday's option price (per OCC).
+    Per-contract tabs (POS-ADBE-225P). 7 columns: Date, DTE, Share Price,
+    Strike, Difference, Option Price, P&L.
+    P&L = option price today - option price yesterday.
     """
     try:
         from google.oauth2 import service_account
@@ -300,12 +317,12 @@ def push_snapshots_to_sheets(results):
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
 
-        NUM_COLS = 10
+        NUM_COLS = 7
         today_str = date.today().isoformat()
         today_serial = (datetime.now() - datetime(1899, 12, 30)).days
         appended = 0
 
-        # Cache: read tab data once per symbol to avoid repeated API calls
+        # Cache: read tab data once per tab
         tab_data_cache = {}
 
         for r in results:
@@ -313,10 +330,8 @@ def push_snapshots_to_sheets(results):
             symbol = pos["symbol"]
             strike = float(pos["strike"])
             exp_date = pos["exp_date"]
-            price_paid = float(pos.get("price_paid", 0) or 0)
 
-            occ = build_occ_symbol(symbol, exp_date, strike)
-            tab_name = build_tab_name(symbol)
+            tab_name = build_tab_name(symbol, strike, exp_date, existing_tabs)
 
             if tab_name not in existing_tabs:
                 print(f"  Sheets: no tab {tab_name}, skipping")
@@ -328,17 +343,17 @@ def push_snapshots_to_sheets(results):
             if tab_name not in tab_data_cache:
                 existing = sheets_service.spreadsheets().values().get(
                     spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                    range=f"'{tab_name}'!A:J",
+                    range=f"'{tab_name}'!A:G",
                     valueRenderOption="FORMATTED_VALUE",
                 ).execute()
                 tab_data_cache[tab_name] = existing.get("values", [])
 
             existing_rows = tab_data_cache[tab_name]
 
-            # Deduplicate: check if same date + OCC already exists
+            # Deduplicate: check if today's date already exists
             already_in_sheet = False
             for row in existing_rows:
-                if len(row) >= 2 and row[0] == today_str and row[1] == occ:
+                if len(row) >= 1 and row[0] == today_str:
                     already_in_sheet = True
                     break
 
@@ -350,19 +365,26 @@ def push_snapshots_to_sheets(results):
             option_price = float(r["option_price"] or 0)
             difference = round(float(r["share_price"] or 0) - strike, 2) if r.get("share_price") else 0
 
-            # P&L = Purchase Price - Current Option Price
-            pl = round(price_paid - option_price, 2)
+            # Find previous option price (last data row, col F = Option Price, index 5)
+            prev_option_price = None
+            for row in reversed(existing_rows):
+                if len(row) >= 6 and row[0] not in ("Date", "Symbol:", "Expiration:", "Position:", ""):
+                    try:
+                        prev_option_price = float(str(row[5]).replace(",", ""))
+                    except (ValueError, TypeError):
+                        pass
+                    break
 
-            # 10 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Purchase Price, Option Price, P&L
+            # P&L = option price today - option price yesterday
+            pl = round(option_price - prev_option_price, 2) if prev_option_price is not None else 0.00
+
+            # 7 columns: Date, DTE, Share Price, Strike, Difference, Option Price, P&L
             row_cells = [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
-                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"stringValue": exp_date}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": r["dte"] or 0}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(r["share_price"] or 0)}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": price_paid}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
             ]
@@ -377,10 +399,9 @@ def push_snapshots_to_sheets(results):
                 }}]},
             ).execute()
 
-            # Update cache so next position for same tab sees this row
-            existing_rows.append([today_str, occ, str(int(strike)), exp_date,
-                                  str(r["dte"] or 0), str(r["share_price"] or 0),
-                                  str(difference), str(price_paid), str(option_price), str(pl)])
+            # Update cache
+            existing_rows.append([today_str, str(r["dte"] or 0), str(r["share_price"] or 0),
+                                  str(int(strike)), str(difference), str(option_price), str(pl)])
             appended += 1
 
         print(f"  Sheets: {appended} daily rows appended")
