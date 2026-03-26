@@ -228,6 +228,18 @@ def load_scan_options(scan_id):
     return result.data
 
 
+@st.cache_data(ttl=30)
+def load_all_scan_options():
+    """Load all scan options across all dates, joined with scan_date."""
+    sb = get_supabase()
+    scans = sb.table("daily_scans").select("id, scan_date").order("scan_date", desc=True).execute().data
+    scan_map = {s["id"]: s["scan_date"] for s in scans}
+    result = sb.table("scan_options").select("*").order("symbol").execute()
+    for row in result.data:
+        row["scan_date"] = scan_map.get(row["scan_id"], "Unknown")
+    return result.data
+
+
 @st.cache_data(ttl=10)
 def load_positions():
     sb = get_supabase()
@@ -747,68 +759,41 @@ if page == "Daily Research":
     st.title("Daily Option Research")
     st.caption(f"Today is {date.today().strftime('%A, %B %d, %Y')}")
 
-    scan_dates = load_scan_dates()
+    # Load ALL options across all scan dates
+    all_options = load_all_scan_options()
 
-    if not scan_dates:
+    if not all_options:
         st.warning("No scan data available yet. Run the daily scanner first.")
         st.stop()
 
-    # Date selector — calendar picker
-    date_options = {s["scan_date"]: s for s in scan_dates}
-    available_dates = [date.fromisoformat(d) for d in date_options.keys()]
-    min_date = min(available_dates)
-    max_date = max(available_dates)
-
-    picked_date = st.sidebar.date_input(
-        "Select Scan Date",
-        value=max_date,
-        min_value=min_date,
-        max_value=max_date,
-        format="YYYY-MM-DD",
-    )
-
-    # Snap to nearest available scan date
-    picked_str = picked_date.isoformat()
-    if picked_str in date_options:
-        selected_date = picked_str
-    else:
-        # Find closest available date
-        closest = min(available_dates, key=lambda d: abs((d - picked_date).days))
-        selected_date = closest.isoformat()
-        st.sidebar.caption(f"No scan on {picked_str}. Showing nearest: **{selected_date}**")
-
-    scan = date_options[selected_date]
-    options = load_scan_options(scan["id"])
+    # Get unique dates and symbols for filters
+    all_dates = sorted(set(o["scan_date"] for o in all_options), reverse=True)
+    all_symbols = sorted(set(o["symbol"] for o in all_options))
 
     # Header metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Report Date", selected_date)
+        st.metric("Total Options", len(all_options))
     with col2:
-        st.metric("VIX", f"{scan['vix']:.2f}" if scan["vix"] else "N/A")
+        st.metric("Scan Dates", len(all_dates))
     with col3:
-        st.metric("Risk-Free Rate", f"{scan['risk_free_rate']:.4f}" if scan["risk_free_rate"] else "N/A")
-    with col4:
-        st.metric("Options Found", len(options))
+        st.metric("Symbols", len(all_symbols))
 
     st.divider()
 
-    if not options:
-        st.info("No options data for this date.")
-        st.stop()
-
     # Filter controls
-    col_f1, col_f2, col_f3 = st.columns(3)
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     with col_f1:
-        symbols = sorted(set(o["symbol"] for o in options))
-        selected_symbols = st.multiselect("Filter by Symbol", symbols, default=symbols)
+        selected_dates = st.multiselect("Filter by Date", all_dates, default=all_dates)
     with col_f2:
-        show_selected_only = st.checkbox("Show selected only", value=False)
+        selected_symbols = st.multiselect("Filter by Symbol", all_symbols, default=all_symbols)
     with col_f3:
-        sort_by = st.selectbox("Sort by", ["Symbol", "IVR %", "POP %", "P50 %", "Delta", "DTE"], index=0)
+        show_selected_only = st.checkbox("Show selected only", value=False)
+    with col_f4:
+        sort_by = st.selectbox("Sort by", ["Scan Date", "Symbol", "IVR %", "POP %", "P50 %", "Delta", "DTE"], index=0)
 
     # Filter
-    filtered = [o for o in options if o["symbol"] in selected_symbols]
+    filtered = [o for o in all_options if o["scan_date"] in selected_dates and o["symbol"] in selected_symbols]
     if show_selected_only:
         filtered = [o for o in filtered if o.get("selected")]
 
@@ -816,8 +801,33 @@ if page == "Daily Research":
     existing_positions = load_all_positions()
     existing_option_ids = {p["scan_option_id"] for p in existing_positions if p.get("scan_option_id")}
 
-    # Build DataFrame
-    df = build_options_dataframe(filtered, existing_option_ids)
+    # Build DataFrame with Scan Date column
+    rows = []
+    for o in filtered:
+        has_position = o["id"] in existing_option_ids
+        rows.append({
+            "Select": has_position or o.get("selected", False),
+            "Scan Date": o.get("scan_date", "-"),
+            "Symbol": o.get("symbol", "-"),
+            "Company": (o.get("name") or "-"),
+            "IVR %": round(o["iv_rank"], 1) if o.get("iv_rank") is not None else None,
+            "DTE": o.get("dte"),
+            "Delta": round(o["delta"], 4) if o.get("delta") is not None else None,
+            "Exp Date": o.get("exp_date", "-"),
+            "POP %": round(o["pop"], 1) if o.get("pop") is not None else None,
+            "P50 %": round(o["p50"], 1) if o.get("p50") is not None else None,
+            "Strike": o.get("strike"),
+            "Bid": o.get("bid"),
+            "Ask": o.get("ask"),
+            "Spread": round(o["bid_ask_spread"], 2) if o.get("bid_ask_spread") is not None else None,
+            "Put Price": o.get("put_price"),
+            "Underlying": o.get("underlying_price"),
+            "Earnings": str(o["earnings"]) if o.get("earnings") else "-",
+            "_id": o["id"],
+            "_has_position": has_position,
+        })
+
+    df = pd.DataFrame(rows)
 
     if df.empty:
         st.info("No options match your filters.")
@@ -825,6 +835,7 @@ if page == "Daily Research":
 
     # Sort
     sort_col_map = {
+        "Scan Date": "Scan Date",
         "Symbol": "Symbol",
         "IVR %": "IVR %",
         "POP %": "POP %",
@@ -832,32 +843,36 @@ if page == "Daily Research":
         "Delta": "Delta",
         "DTE": "DTE",
     }
-    sort_col = sort_col_map.get(sort_by, "Symbol")
+    sort_col = sort_col_map.get(sort_by, "Scan Date")
     ascending = sort_by in ["Symbol", "Delta", "DTE"]
-    df = df.sort_values(by=sort_col, ascending=ascending, na_position="last").reset_index(drop=True)
+    if sort_by == "Scan Date":
+        df = df.sort_values(by=["Scan Date", "Symbol"], ascending=[False, True], na_position="last").reset_index(drop=True)
+    else:
+        df = df.sort_values(by=sort_col, ascending=ascending, na_position="last").reset_index(drop=True)
 
     col_hdr, col_export = st.columns([3, 1])
     with col_hdr:
-        st.subheader(f"Options — {selected_date} ({len(df)} rows)")
+        st.subheader(f"All Options ({len(df)} rows)")
     with col_export:
-        export_cols = ["Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
+        export_cols = ["Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                        "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
                        "Underlying", "Earnings"]
         st.download_button(
             label="Export CSV",
             data=df[export_cols].to_csv(index=False),
-            file_name=f"options_{selected_date}.csv",
+            file_name=f"options_all_{date.today()}.csv",
             mime="text/csv",
             use_container_width=True,
         )
 
-    # Display columns (Stan's preferred order: Symbol, Company, Strike, Put Price, DTE, POP, then rest)
-    display_cols = ["Select", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
+    # Display columns with Scan Date
+    display_cols = ["Select", "Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                     "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
                     "Underlying", "Earnings"]
 
     column_config = {
         "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
+        "Scan Date": st.column_config.TextColumn("Scan Date", width="small"),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
         "Company": st.column_config.TextColumn("Company", width="medium"),
         "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
