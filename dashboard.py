@@ -333,9 +333,9 @@ def build_tab_name(symbol, strike, exp_date, existing_tabs):
 def add_position_to_sheets(option):
     """Add position to Google Sheets Position Tracker.
 
-    One tab per contract (e.g., POS-ADBE-225P). Header rows with trade info.
-    7 columns: Date, DTE, Share Price, Strike, Difference, Option Price, P&L.
-    P&L = option price today - option price yesterday.
+    One tab per symbol+strike (e.g., POS-CRM-160P). Header rows with trade info.
+    9 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L.
+    P&L = Option Price - Price Paid.
     """
     try:
         service = get_google_sheets_service()
@@ -378,12 +378,14 @@ def add_position_to_sheets(option):
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
 
-        NUM_COLS = 7
+        NUM_COLS = 9
 
         def _build_data_row(pl_value=0.00):
-            """7 columns: Date, DTE, Share Price, Strike, Difference, Option Price, P&L."""
+            """9 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L."""
             return [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
+                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
+                {"userEnteredValue": {"stringValue": exp_str}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": dte_val}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(share_price)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": data_fmt},
@@ -395,23 +397,22 @@ def add_position_to_sheets(option):
         if tab_exists:
             sheet_id = existing_tabs[tab_name]
 
-            # Read existing data to dedup and find previous option price
             result = service.spreadsheets().values().get(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:G",
+                range=f"'{tab_name}'!A:I",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute()
             existing_rows = result.get("values", [])
             next_row = len(existing_rows)
 
-            # Deduplicate: check if today already exists
+            # Deduplicate: check if today + OCC already exists
             for row in existing_rows:
-                if len(row) >= 1 and row[0] == today_str:
+                if len(row) >= 2 and row[0] == today_str and row[1] == occ:
                     return {"success": True, "tab_name": tab_name, "action": "already_exists",
                             "occ": occ, "message": f"{occ} already tracked on {today_str}"}
 
-            # P&L = 0 on entry (first row for this contract)
-            pl = 0.00
+            # P&L = Option Price - Price Paid (0 on entry day)
+            pl = round(float(put_price) - float(put_price), 2)
 
             requests = [{"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
@@ -426,7 +427,7 @@ def add_position_to_sheets(option):
             return {"success": True, "tab_name": tab_name, "action": "appended", "occ": occ}
 
         else:
-            # Create new per-contract tab
+            # Create new tab
             add_result = service.spreadsheets().batchUpdate(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
                 body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
@@ -441,7 +442,7 @@ def add_position_to_sheets(option):
             # Row 1: Title (merged, dark blue)
             requests.append({"mergeCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 8},
+                          "startColumnIndex": 0, "endColumnIndex": NUM_COLS},
                 "mergeType": "MERGE_ALL",
             }})
             requests.append({"updateCells": {
@@ -455,7 +456,7 @@ def add_position_to_sheets(option):
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # Row 2: Symbol, Name, Strike, Price Paid (white, no borders)
+            # Row 2: Symbol, Name, Strike, Price Paid
             requests.append({"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2,
                           "startColumnIndex": 0, "endColumnIndex": 8},
@@ -472,7 +473,7 @@ def add_position_to_sheets(option):
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # Row 3: Expiration, Quantity, Direction (white, no borders)
+            # Row 3: Expiration, Quantity, Direction
             requests.append({"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3,
                           "startColumnIndex": 0, "endColumnIndex": 6},
@@ -487,8 +488,8 @@ def add_position_to_sheets(option):
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # Row 5: Headers (dark blue)
-            headers = ["Date", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L"]
+            # Row 5: Headers
+            headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L"]
             hdr_fmt = {"backgroundColor": DARK_BLUE, "borders": ALL_BORDERS, "horizontalAlignment": "CENTER",
                        "textFormat": {"foregroundColor": WHITE_TEXT, "fontSize": 10, "bold": True}}
             hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
@@ -508,7 +509,7 @@ def add_position_to_sheets(option):
             }})
 
             # Column widths
-            for i, w in enumerate([100, 60, 100, 70, 90, 100, 80]):
+            for i, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80]):
                 requests.append({"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
                     "properties": {"pixelSize": w}, "fields": "pixelSize",
