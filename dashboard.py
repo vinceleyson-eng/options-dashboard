@@ -371,10 +371,10 @@ def add_position_to_sheets(option):
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
 
-        NUM_COLS = 9
+        NUM_COLS = 10
 
         def _build_data_row(pl_value=0.00):
-            """9 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Option Price, P&L."""
+            """10 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Purchase Price, Option Price, P&L."""
             return [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
                 {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
@@ -384,16 +384,17 @@ def add_position_to_sheets(option):
                 {"userEnteredValue": {"numberValue": float(share_price)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": pl_value}, "userEnteredFormat": num_fmt},
             ]
 
         if tab_exists:
             sheet_id = existing_tabs[tab_name]
 
-            # Read existing data: col A=Date, B=OCC, H=Option Price for dedup + P&L calc
+            # Read existing data: col A=Date, B=OCC, H=Purchase Price, I=Option Price
             result = service.spreadsheets().values().get(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:I",
+                range=f"'{tab_name}'!A:J",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute()
             existing_rows = result.get("values", [])
@@ -405,18 +406,8 @@ def add_position_to_sheets(option):
                     return {"success": True, "tab_name": tab_name, "action": "already_exists",
                             "occ": occ, "message": f"{occ} already tracked on {today_str}"}
 
-            # Find previous option price for this OCC (scan rows in reverse)
-            prev_option_price = None
-            for row in reversed(existing_rows):
-                if len(row) >= 8 and row[1] == occ:
-                    try:
-                        prev_option_price = float(str(row[7]).replace(",", ""))
-                    except (ValueError, TypeError):
-                        pass
-                    break
-
-            # P&L = today's option price - yesterday's option price
-            pl = round(float(put_price) - prev_option_price, 2) if prev_option_price is not None else 0.00
+            # P&L = Purchase Price - Current Option Price
+            pl = round(float(put_price) - float(put_price), 2)  # Entry: P&L = 0
 
             # Append new daily row
             requests = [{"updateCells": {
@@ -461,7 +452,7 @@ def add_position_to_sheets(option):
             }})
 
             # --- Row 3: Header row (dark blue, white bold) ---
-            headers = ["Date", "OCC", "Strike", "Exp", "DTE", "Share Price", "Difference", "Option Price", "P&L"]
+            headers = ["Date", "OCC", "Strike", "Exp", "DTE", "Share Price", "Difference", "Purchase Price", "Option Price", "P&L"]
             hdr_fmt = {
                 "backgroundColor": DARK_BLUE,
                 "borders": ALL_BORDERS,
@@ -483,7 +474,7 @@ def add_position_to_sheets(option):
             }})
 
             # --- Set column widths ---
-            col_widths = [100, 180, 70, 100, 50, 100, 90, 100, 80]
+            col_widths = [100, 180, 70, 100, 50, 100, 90, 110, 100, 80]
             for i, w in enumerate(col_widths):
                 requests.append({"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},

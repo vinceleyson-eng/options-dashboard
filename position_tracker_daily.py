@@ -300,7 +300,7 @@ def push_snapshots_to_sheets(results):
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
 
-        NUM_COLS = 9
+        NUM_COLS = 10
         today_str = date.today().isoformat()
         today_serial = (datetime.now() - datetime(1899, 12, 30)).days
         appended = 0
@@ -313,6 +313,7 @@ def push_snapshots_to_sheets(results):
             symbol = pos["symbol"]
             strike = float(pos["strike"])
             exp_date = pos["exp_date"]
+            price_paid = float(pos.get("price_paid", 0) or 0)
 
             occ = build_occ_symbol(symbol, exp_date, strike)
             tab_name = build_tab_name(symbol)
@@ -327,7 +328,7 @@ def push_snapshots_to_sheets(results):
             if tab_name not in tab_data_cache:
                 existing = sheets_service.spreadsheets().values().get(
                     spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                    range=f"'{tab_name}'!A:I",
+                    range=f"'{tab_name}'!A:J",
                     valueRenderOption="FORMATTED_VALUE",
                 ).execute()
                 tab_data_cache[tab_name] = existing.get("values", [])
@@ -346,23 +347,13 @@ def push_snapshots_to_sheets(results):
 
             next_row = len(existing_rows)
 
-            # Find previous option price for this OCC (scan rows in reverse)
-            prev_option_price = None
-            for row in reversed(existing_rows):
-                if len(row) >= 8 and row[1] == occ:
-                    try:
-                        prev_option_price = float(str(row[7]).replace(",", ""))
-                    except (ValueError, TypeError):
-                        pass
-                    break
-
             option_price = float(r["option_price"] or 0)
             difference = round(float(r["share_price"] or 0) - strike, 2) if r.get("share_price") else 0
 
-            # P&L = today's option price - yesterday's option price
-            pl = round(option_price - prev_option_price, 2) if prev_option_price is not None else 0.00
+            # P&L = Purchase Price - Current Option Price
+            pl = round(price_paid - option_price, 2)
 
-            # 9 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Option Price, P&L
+            # 10 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Purchase Price, Option Price, P&L
             row_cells = [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
                 {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
@@ -371,6 +362,7 @@ def push_snapshots_to_sheets(results):
                 {"userEnteredValue": {"numberValue": r["dte"] or 0}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(r["share_price"] or 0)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": price_paid}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
             ]
@@ -388,7 +380,7 @@ def push_snapshots_to_sheets(results):
             # Update cache so next position for same tab sees this row
             existing_rows.append([today_str, occ, str(int(strike)), exp_date,
                                   str(r["dte"] or 0), str(r["share_price"] or 0),
-                                  str(difference), str(option_price), str(pl)])
+                                  str(difference), str(price_paid), str(option_price), str(pl)])
             appended += 1
 
         print(f"  Sheets: {appended} daily rows appended")
