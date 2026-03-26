@@ -373,7 +373,7 @@ def add_position_to_sheets(option):
 
         NUM_COLS = 9
 
-        def _build_data_row():
+        def _build_data_row(pl_value=0.00):
             """9 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Option Price, P&L."""
             return [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
@@ -384,16 +384,16 @@ def add_position_to_sheets(option):
                 {"userEnteredValue": {"numberValue": float(share_price)}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": 0.00}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": pl_value}, "userEnteredFormat": num_fmt},
             ]
 
         if tab_exists:
             sheet_id = existing_tabs[tab_name]
 
-            # Read existing data (col A = Date, col B = OCC) to dedup
+            # Read existing data: col A=Date, B=OCC, H=Option Price for dedup + P&L calc
             result = service.spreadsheets().values().get(
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:B",
+                range=f"'{tab_name}'!A:I",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute()
             existing_rows = result.get("values", [])
@@ -405,11 +405,24 @@ def add_position_to_sheets(option):
                     return {"success": True, "tab_name": tab_name, "action": "already_exists",
                             "occ": occ, "message": f"{occ} already tracked on {today_str}"}
 
+            # Find previous option price for this OCC (scan rows in reverse)
+            prev_option_price = None
+            for row in reversed(existing_rows):
+                if len(row) >= 8 and row[1] == occ:
+                    try:
+                        prev_option_price = float(str(row[7]).replace(",", ""))
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+            # P&L = today's option price - yesterday's option price
+            pl = round(float(put_price) - prev_option_price, 2) if prev_option_price is not None else 0.00
+
             # Append new daily row
             requests = [{"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
                           "startColumnIndex": 0, "endColumnIndex": NUM_COLS},
-                "rows": [{"values": _build_data_row()}],
+                "rows": [{"values": _build_data_row(pl)}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }}]
 

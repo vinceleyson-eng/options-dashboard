@@ -45,29 +45,9 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
-def build_tab_name(symbol, strike, exp_date, existing_tabs):
-    """Build per-contract tab name (e.g., POS-ADBE-225P).
-
-    If same symbol+strike has different expirations, add suffix (e.g., POS-LULU-140P-0417).
-    """
-    strike_int = int(float(strike))
-    base = f"POS-{symbol}-{strike_int}P"
-
-    if base in existing_tabs:
-        return base
-
-    conflict = False
-    for tab in existing_tabs:
-        if tab.startswith(base) and tab != base:
-            conflict = True
-            break
-
-    if conflict:
-        exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
-        suffix = exp_dt.strftime("%m%d")
-        return f"{base}-{suffix}"
-
-    return base
+def build_tab_name(symbol):
+    """Build per-symbol tab name (e.g., POS-ADBE)."""
+    return f"POS-{symbol}"
 
 
 def build_streamer_symbol(symbol, exp_date, strike):
@@ -293,7 +273,12 @@ def process_shadow_positions(sb, shadows, underlying_prices, option_prices, toda
 
 
 def push_snapshots_to_sheets(results):
-    """Append daily snapshot rows to Google Sheets Position Tracker."""
+    """Append daily snapshot rows to Google Sheets Position Tracker.
+
+    Per-symbol tabs (POS-ADBE). 9 columns: Date, OCC, Strike, Exp, DTE,
+    Share Price, Difference, Option Price, P&L.
+    P&L = today's option price - yesterday's option price (per OCC).
+    """
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
@@ -314,20 +299,23 @@ def push_snapshots_to_sheets(results):
                     "verticalAlignment": "MIDDLE", "textFormat": {"fontSize": 10}}
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
-        text_fmt = {**data_fmt, "textFormat": {"fontSize": 9}}
 
+        NUM_COLS = 9
         today_str = date.today().isoformat()
         today_serial = (datetime.now() - datetime(1899, 12, 30)).days
         appended = 0
+
+        # Cache: read tab data once per symbol to avoid repeated API calls
+        tab_data_cache = {}
 
         for r in results:
             pos = r["position"]
             symbol = pos["symbol"]
             strike = float(pos["strike"])
             exp_date = pos["exp_date"]
-            price_paid = float(pos.get("price_paid", 0) or 0)
 
-            tab_name = build_tab_name(symbol, strike, exp_date, existing_tabs)
+            occ = build_occ_symbol(symbol, exp_date, strike)
+            tab_name = build_tab_name(symbol)
 
             if tab_name not in existing_tabs:
                 print(f"  Sheets: no tab {tab_name}, skipping")
@@ -335,17 +323,21 @@ def push_snapshots_to_sheets(results):
 
             sheet_id = existing_tabs[tab_name]
 
-            # Read existing dates (col A = Date) to dedup
-            existing = sheets_service.spreadsheets().values().get(
-                spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!A:A",
-                valueRenderOption="FORMATTED_VALUE",
-            ).execute()
-            existing_rows = existing.get("values", [])
+            # Read existing rows (cache per tab)
+            if tab_name not in tab_data_cache:
+                existing = sheets_service.spreadsheets().values().get(
+                    spreadsheetId=POSITION_TRACKER_SHEET_ID,
+                    range=f"'{tab_name}'!A:I",
+                    valueRenderOption="FORMATTED_VALUE",
+                ).execute()
+                tab_data_cache[tab_name] = existing.get("values", [])
 
+            existing_rows = tab_data_cache[tab_name]
+
+            # Deduplicate: check if same date + OCC already exists
             already_in_sheet = False
             for row in existing_rows:
-                if len(row) >= 1 and row[0] == today_str:
+                if len(row) >= 2 and row[0] == today_str and row[1] == occ:
                     already_in_sheet = True
                     break
 
@@ -354,26 +346,31 @@ def push_snapshots_to_sheets(results):
 
             next_row = len(existing_rows)
 
-            # Get entry option price (first data row, col F = Option Price)
-            entry_result = sheets_service.spreadsheets().values().get(
-                spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                range=f"'{tab_name}'!F6",
-                valueRenderOption="UNFORMATTED_VALUE",
-            ).execute()
-            entry_vals = entry_result.get("values", [])
-            entry_option_price = float(entry_vals[0][0]) if entry_vals and entry_vals[0] else price_paid
+            # Find previous option price for this OCC (scan rows in reverse)
+            prev_option_price = None
+            for row in reversed(existing_rows):
+                if len(row) >= 8 and row[1] == occ:
+                    try:
+                        prev_option_price = float(str(row[7]).replace(",", ""))
+                    except (ValueError, TypeError):
+                        pass
+                    break
 
-            # P&L = (Entry Option Price - Current Option Price) × 100
             option_price = float(r["option_price"] or 0)
-            pl = round((entry_option_price - option_price) * 100, 2) if option_price else 0
+            difference = round(float(r["share_price"] or 0) - strike, 2) if r.get("share_price") else 0
 
-            # 7 columns: Date, DTE, Share Price, Strike, Difference, Option Price, P&L
+            # P&L = today's option price - yesterday's option price
+            pl = round(option_price - prev_option_price, 2) if prev_option_price is not None else 0.00
+
+            # 9 columns: Date, OCC, Strike, Exp, DTE, Share Price, Difference, Option Price, P&L
             row_cells = [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
+                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
+                {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": data_fmt},
+                {"userEnteredValue": {"stringValue": exp_date}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": r["dte"] or 0}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": float(r["share_price"] or 0)}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": float(r["difference"] or 0)}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
             ]
@@ -382,11 +379,16 @@ def push_snapshots_to_sheets(results):
                 spreadsheetId=POSITION_TRACKER_SHEET_ID,
                 body={"requests": [{"updateCells": {
                     "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
-                              "startColumnIndex": 0, "endColumnIndex": 7},
+                              "startColumnIndex": 0, "endColumnIndex": NUM_COLS},
                     "rows": [{"values": row_cells}],
                     "fields": "userEnteredValue,userEnteredFormat",
                 }}]},
             ).execute()
+
+            # Update cache so next position for same tab sees this row
+            existing_rows.append([today_str, occ, str(int(strike)), exp_date,
+                                  str(r["dte"] or 0), str(r["share_price"] or 0),
+                                  str(difference), str(option_price), str(pl)])
             appended += 1
 
         print(f"  Sheets: {appended} daily rows appended")
