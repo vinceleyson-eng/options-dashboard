@@ -230,14 +230,29 @@ def load_scan_options(scan_id):
 
 @st.cache_data(ttl=30)
 def load_all_scan_options():
-    """Load all scan options across all dates, joined with scan_date."""
+    """Load scan options across all dates for watchlist symbols only."""
     sb = get_supabase()
     scans = sb.table("daily_scans").select("id, scan_date").order("scan_date", desc=True).execute().data
     scan_map = {s["id"]: s["scan_date"] for s in scans}
-    result = sb.table("scan_options").select("*").order("symbol").execute()
-    for row in result.data:
+
+    # Get watchlist symbols from config
+    config = sb.table("config").select("value").eq("key", "symbols").execute().data
+    if config:
+        import json
+        val = config[0]["value"]
+        watchlist = json.loads(val) if isinstance(val, str) else val
+    else:
+        watchlist = []
+
+    # Only load scan_options for watchlist symbols
+    all_options = []
+    for sym in watchlist:
+        result = sb.table("scan_options").select("*").eq("symbol", sym).order("symbol").execute()
+        all_options.extend(result.data)
+
+    for row in all_options:
         row["scan_date"] = scan_map.get(row["scan_id"], "Unknown")
-    return result.data
+    return all_options
 
 
 @st.cache_data(ttl=10)
