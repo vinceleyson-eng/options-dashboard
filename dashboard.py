@@ -781,7 +781,7 @@ if page == "Daily Research":
     # Filter controls
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     with col_f1:
-        selected_dates = st.multiselect("Filter by Date", all_dates, default=all_dates)
+        selected_dates = st.multiselect("Filter by Date", all_dates, default=[all_dates[0]] if all_dates else [])
     with col_f2:
         selected_symbols = st.multiselect("Filter by Symbol", all_symbols, default=all_symbols)
     with col_f3:
