@@ -350,7 +350,7 @@ def add_position_to_sheets(option):
 
     One tab per symbol+strike (e.g., POS-CRM-160P). Header rows with trade info.
     9 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L.
-    P&L = Option Price - Price Paid.
+    P&L = Price Paid - Option Price (positive = profit for short put).
     """
     try:
         service = get_google_sheets_service()
@@ -426,7 +426,7 @@ def add_position_to_sheets(option):
                     return {"success": True, "tab_name": tab_name, "action": "already_exists",
                             "occ": occ, "message": f"{occ} already tracked on {today_str}"}
 
-            # P&L = Option Price - Price Paid (0 on entry day)
+            # P&L = Price Paid - Option Price (0 on entry day)
             pl = round(float(put_price) - float(put_price), 2)
 
             requests = [{"updateCells": {

@@ -364,7 +364,7 @@ def push_snapshots_to_sheets(results):
             difference = round(float(r["share_price"] or 0) - strike, 2) if r.get("share_price") else 0
 
             # P&L = Option Price - Price Paid
-            pl = round(option_price - price_paid, 2)
+            pl = round(price_paid - option_price, 2)
 
             # 9 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L
             row_cells = [

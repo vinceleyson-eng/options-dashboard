@@ -231,7 +231,7 @@ for (symbol, strike_int), pos_list in sorted(groups.items()):
         opt_price = day["option_price"]
         share_price = day["share_price"]
         diff = round(share_price - strike_int, 2) if share_price else 0
-        pl = round(opt_price - day["price_paid"], 2)
+        pl = round(day["price_paid"] - opt_price, 2)
 
         cells = [
             {"userEnteredValue": {"numberValue": to_serial(day["date"])}, "userEnteredFormat": dt_fmt},
