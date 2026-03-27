@@ -69,12 +69,13 @@ for pos in positions:
     all_snapshots[pos["id"]] = snaps
 
 # Group positions by symbol+strike (merge different expirations)
+# Group by OCC (one tab per OCC)
 groups = defaultdict(list)
 for pos in positions:
-    key = (pos["symbol"], int(float(pos["strike"])))
-    groups[key].append(pos)
+    occ = build_occ(pos["symbol"], pos["exp_date"], float(pos["strike"]))
+    groups[occ].append(pos)
 
-print(f"Unique symbol+strike combos: {len(groups)}")
+print(f"Unique OCC contracts: {len(groups)}")
 
 # Clear old tabs
 meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
@@ -89,23 +90,25 @@ if del_reqs:
     service.spreadsheets().batchUpdate(spreadsheetId=SHEET_ID, body={"requests": del_reqs}).execute()
 print("Cleared old tabs")
 
-for (symbol, strike_int), pos_list in sorted(groups.items()):
-    tab_name = f"POS-{symbol}-{strike_int}P"
+for occ_key, pos_list in sorted(groups.items()):
+    tab_name = occ_key  # OCC as tab name
 
     # Use first position's info for header
     first = pos_list[0]
+    symbol = first["symbol"]
+    strike_int = int(float(first["strike"]))
     company = first.get("name", symbol)
     price_paid = float(first.get("price_paid", 0) or 0)
     quantity = int(first.get("quantity", 1) or 1)
     direction = first.get("direction", "Short")
 
-    # Collect all daily data across all expirations for this symbol+strike
+    # Collect daily data for this OCC
     daily_data = []
     for pos in pos_list:
         exp_date = pos["exp_date"]
         pp = float(pos.get("price_paid", 0) or 0)
         opened_date = str(pos.get("opened_at", ""))[:10]
-        occ = build_occ(symbol, exp_date, float(pos["strike"]))
+        occ = occ_key
 
         # From scan_options
         for scan in scans:
@@ -147,9 +150,8 @@ for (symbol, strike_int), pos_list in sorted(groups.items()):
             deduped.append(d)
     daily_data = deduped
 
-    # Show all expirations in header
-    expirations = sorted(set(pos["exp_date"] for pos in pos_list))
-    exp_display = ", ".join(expirations)
+    # Expiration from first position
+    exp_display = first["exp_date"]
 
     print(f"Creating {tab_name}: {len(daily_data)} rows, exps: {exp_display}")
 

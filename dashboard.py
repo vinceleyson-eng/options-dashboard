@@ -326,23 +326,9 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
-def build_tab_name(symbol, strike, exp_date, existing_tabs):
-    """Build per-contract tab name (e.g., POS-ADBE-225P).
-
-    If same symbol+strike exists with different exp, add suffix.
-    """
-    strike_int = int(float(strike))
-    base = f"POS-{symbol}-{strike_int}P"
-
-    if base in existing_tabs:
-        return base
-
-    for tab in existing_tabs:
-        if tab.startswith(base) and tab != base:
-            exp_dt = datetime.strptime(exp_date, "%Y-%m-%d")
-            return f"{base}-{exp_dt.strftime('%m%d')}"
-
-    return base
+def build_tab_name(symbol, strike, exp_date, existing_tabs=None):
+    """Build tab name using OCC symbol (e.g., ADBE  260515P00215000)."""
+    return build_occ_symbol(symbol, exp_date, strike)
 
 
 def add_position_to_sheets(option):
