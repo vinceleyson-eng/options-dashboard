@@ -385,6 +385,109 @@ def push_snapshots_to_sheets(results):
         print(f"  Sheets ERROR: {e}")
 
 
+def update_summary_sheet(sb, positions, results, underlying_prices, option_prices):
+    """Rebuild Summary sheet with current prices for all open positions."""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+
+        creds = service_account.Credentials.from_service_account_file(
+            SA_PATH, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        sheets_service = build("sheets", "v4", credentials=creds)
+
+        meta = sheets_service.spreadsheets().get(spreadsheetId=POSITION_TRACKER_SHEET_ID).execute()
+        tabs = {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta["sheets"]}
+
+        if "Summary" not in tabs:
+            print("  Summary tab not found, skipping")
+            return
+
+        summary_id = tabs["Summary"]
+
+        # Formatting
+        DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
+        LIGHT_GRAY = {"red": 0.949, "green": 0.949, "blue": 0.949}
+        WHITE_TEXT = {"red": 1, "green": 1, "blue": 1}
+        BORDER_CLR = {"red": 0.698, "green": 0.698, "blue": 0.698}
+        THIN = {"style": "SOLID", "width": 1, "color": BORDER_CLR}
+        ALL_BORDERS = {"top": THIN, "bottom": THIN, "left": THIN, "right": THIN}
+        d_fmt = {"backgroundColor": LIGHT_GRAY, "borders": ALL_BORDERS, "horizontalAlignment": "CENTER",
+                 "verticalAlignment": "MIDDLE", "textFormat": {"fontSize": 10}}
+        n_fmt = {**d_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+        hdr_fmt = {"backgroundColor": DARK_BLUE, "borders": ALL_BORDERS, "horizontalAlignment": "CENTER",
+                   "textFormat": {"foregroundColor": WHITE_TEXT, "fontSize": 10, "bold": True}}
+
+        SUMMARY_COLS = 10
+
+        # Clear existing data (rows 4+, keep title + headers)
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=POSITION_TRACKER_SHEET_ID,
+            body={"requests": [{"updateCells": {
+                "range": {"sheetId": summary_id, "startRowIndex": 3, "startColumnIndex": 0, "endColumnIndex": SUMMARY_COLS},
+                "fields": "userEnteredValue",
+            }}]},
+        ).execute()
+
+        # Build result lookup by position id
+        result_by_id = {}
+        for r in results:
+            result_by_id[r["position"]["id"]] = r
+
+        # Load ALL open positions (not just ones with results)
+        all_positions = sb.table("positions").select("*").eq("status", "open").order("opened_at").execute().data
+
+        reqs = []
+        for i, pos in enumerate(sorted(all_positions, key=lambda p: (p["symbol"], float(p["strike"])))):
+            row_idx = 3 + i
+            symbol = pos["symbol"]
+            strike = float(pos["strike"])
+            exp_date = pos["exp_date"]
+            company = pos.get("name", symbol)
+            price_paid = float(pos.get("price_paid", 0) or 0)
+            opened_date = str(pos.get("opened_at", ""))[:10]
+
+            occ = build_occ_symbol(symbol, exp_date, strike)
+
+            # Get current option price from results or snapshots
+            r = result_by_id.get(pos["id"])
+            if r and r.get("option_price"):
+                current_price = float(r["option_price"])
+            else:
+                current_price = price_paid  # No data yet
+
+            pl = round(price_paid - current_price, 2)
+
+            cells = [
+                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": exp_date}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": opened_date}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"numberValue": price_paid}, "userEnteredFormat": n_fmt},
+                {"userEnteredValue": {"numberValue": current_price}, "userEnteredFormat": n_fmt},
+                {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": n_fmt},
+                {"userEnteredValue": {"stringValue": "OPEN"}, "userEnteredFormat": d_fmt},
+            ]
+            reqs.append({"updateCells": {
+                "range": {"sheetId": summary_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                          "startColumnIndex": 0, "endColumnIndex": SUMMARY_COLS},
+                "rows": [{"values": cells}],
+                "fields": "userEnteredValue,userEnteredFormat",
+            }})
+
+        if reqs:
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=POSITION_TRACKER_SHEET_ID,
+                body={"requests": reqs},
+            ).execute()
+
+        print(f"  Summary sheet updated with {len(all_positions)} positions")
+
+    except Exception as e:
+        print(f"  Summary sheet ERROR: {e}")
+
+
 async def main():
     today = date.today()
     print(f"Position Tracker — {today}")
@@ -450,6 +553,11 @@ async def main():
     if shadows:
         print(f"Processing {len(shadows)} shadow positions...")
         process_shadow_positions(sb, shadows, underlying_prices, option_prices, today)
+
+    # Update Summary sheet with latest prices
+    if positions:
+        print("\nUpdating Summary sheet...")
+        update_summary_sheet(sb, positions, results, underlying_prices, option_prices)
 
     print()
     print("=" * 50)
