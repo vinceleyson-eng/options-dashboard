@@ -10,6 +10,7 @@ Run: streamlit run dashboard.py
 
 import os
 import json
+import time
 import asyncio
 from decimal import Decimal
 from datetime import date, datetime
@@ -615,13 +616,10 @@ def trade_confirmation_dialog(option):
                         toggle_selection(option["id"], True)
                         create_position(option)
                         st.cache_data.clear()
-                        occ = sheet_result.get("occ", "")
-                        st.success(
-                            f"Position tracked! {option['symbol']} {option['strike']:.0f} Put\n\n"
-                            f"OCC: **{occ}**\n\n"
-                            f"Sheet tab: **{sheet_result['tab_name']}**"
-                        )
-                        st.balloons()
+                        st.session_state.dry_run_result = None
+                        st.toast(f"Position tracked: {option['symbol']} {option['strike']:.0f} Put", icon="✅")
+                        time.sleep(1)
+                        st.rerun()
 
     # Path 2: Validate & Place Order (TastyTrade)
     with btn_col2:
@@ -683,13 +681,14 @@ def trade_confirmation_dialog(option):
                         toggle_selection(option["id"], True)
                         create_position(option, order_id=order_id, order_status=order_status)
 
+                        # Also add to Google Sheets
+                        add_position_to_sheets(option)
+
                         st.session_state.dry_run_result = None
                         st.cache_data.clear()
-                        st.success(
-                            f"Order placed! {option['symbol']} {option['strike']:.0f} Put | "
-                            f"Order #{order_id} | Status: {order_status}"
-                        )
-                        st.balloons()
+                        st.toast(f"Order placed: {option['symbol']} {option['strike']:.0f} Put | Order #{order_id}", icon="✅")
+                        time.sleep(1)
+                        st.rerun()
 
             with c2:
                 if st.button("Cancel", use_container_width=True):
@@ -780,14 +779,17 @@ if page == "Daily Research":
     if show_selected_only:
         filtered = [o for o in filtered if o.get("selected")]
 
-    # Get existing positions for checkbox state
+    # Get existing positions for checkbox state — match by symbol+strike+exp
     existing_positions = load_all_positions()
     existing_option_ids = {p["scan_option_id"] for p in existing_positions if p.get("scan_option_id")}
+    existing_contracts = {(p["symbol"], float(p["strike"]), p["exp_date"])
+                          for p in existing_positions if p.get("symbol")}
 
     # Build DataFrame with Scan Date column
     rows = []
     for o in filtered:
-        has_position = o["id"] in existing_option_ids
+        has_position = (o["id"] in existing_option_ids or
+                        (o.get("symbol"), float(o.get("strike", 0)), o.get("exp_date")) in existing_contracts)
         rows.append({
             "Select": has_position or o.get("selected", False),
             "Scan Date": o.get("scan_date", "-"),
