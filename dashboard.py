@@ -767,15 +767,6 @@ if page == "Daily Research":
     all_dates = sorted(set(o["scan_date"] for o in all_options), reverse=True)
     all_symbols = sorted(set(o["symbol"] for o in all_options))
 
-    # Header metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Options", len(all_options))
-    with col2:
-        st.metric("Scan Dates", len(all_dates))
-    with col3:
-        st.metric("Symbols", len(all_symbols))
-
     st.divider()
 
     # Filter controls
