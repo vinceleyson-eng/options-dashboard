@@ -181,6 +181,34 @@ for occ_key, pos_list in sorted(groups.items()):
             deduped.append(d)
     daily_data = deduped
 
+    # Fill gaps: for scan dates between first and last row with no data, carry forward
+    if daily_data:
+        existing_dates = {d["date"] for d in daily_data}
+        first_date = daily_data[0]["date"]
+        scan_dates_after = [s["scan_date"] for s in scans if s["scan_date"] >= first_date]
+
+        filled = []
+        last_known = daily_data[0]
+        for sd in scan_dates_after:
+            if sd in existing_dates:
+                # Use actual data
+                match = next(d for d in daily_data if d["date"] == sd)
+                filled.append(match)
+                last_known = match
+            else:
+                # Carry forward last known, update DTE
+                from datetime import datetime as _dt3
+                exp_d = first["exp_date"]
+                new_dte = (_dt.strptime(exp_d, "%Y-%m-%d") - _dt.strptime(sd, "%Y-%m-%d")).days
+                filled.append({
+                    "date": sd, "occ": last_known["occ"], "exp": last_known["exp"],
+                    "dte": new_dte,
+                    "share_price": last_known["share_price"],
+                    "option_price": last_known["option_price"],
+                    "price_paid": last_known["price_paid"],
+                })
+        daily_data = filled
+
     # Expiration from first position
     exp_display = first["exp_date"]
 
