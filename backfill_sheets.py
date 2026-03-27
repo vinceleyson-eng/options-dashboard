@@ -110,10 +110,41 @@ for occ_key, pos_list in sorted(groups.items()):
         opened_date = str(pos.get("opened_at", ""))[:10]
         occ = occ_key
 
-        # From scan_options
+        # Always add an entry row for the opened date using price_paid
+        # This ensures the first row matches the header Price Paid
+        from datetime import datetime as _dt2
+        opened_dte = (_dt.strptime(exp_date, "%Y-%m-%d") - _dt.strptime(opened_date, "%Y-%m-%d")).days if exp_date and opened_date else 0
+        # Try to get share price from scan on opened date or nearest
+        entry_share = 0
+        for scan in scans:
+            if scan["scan_date"] == opened_date:
+                key = (symbol, float(pos["strike"]), exp_date, opened_date)
+                opt = option_lookup.get(key)
+                if opt:
+                    entry_share = float(opt.get("underlying_price", 0) or 0)
+                break
+        if not entry_share:
+            # Fallback: use any ADBE scan on that date for underlying price
+            for scan in scans:
+                if scan["scan_date"] == opened_date:
+                    for o in all_options:
+                        if o["scan_id"] == scan["id"] and o["symbol"] == symbol and o.get("underlying_price"):
+                            entry_share = float(o["underlying_price"])
+                            break
+                    break
+
+        daily_data.append({
+            "date": opened_date, "occ": occ, "exp": exp_date,
+            "dte": opened_dte,
+            "share_price": entry_share,
+            "option_price": pp,  # Entry row: option price = price paid
+            "price_paid": pp,
+        })
+
+        # From scan_options (skip opened date since we added it above)
         for scan in scans:
             sd = scan["scan_date"]
-            if sd < opened_date:
+            if sd <= opened_date:
                 continue
             key = (symbol, float(pos["strike"]), exp_date, sd)
             opt = option_lookup.get(key)
@@ -126,7 +157,7 @@ for occ_key, pos_list in sorted(groups.items()):
                     "price_paid": pp,
                 })
 
-        # From snapshots
+        # From snapshots (skip opened date)
         existing_dates_occ = {(d["date"], d["occ"]) for d in daily_data}
         for snap in all_snapshots.get(pos["id"], []):
             if (snap["snapshot_date"], occ) not in existing_dates_occ:
