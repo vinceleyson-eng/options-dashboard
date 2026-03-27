@@ -536,6 +536,69 @@ def close_position(position_id):
     }).eq("id", position_id).execute()
 
 
+def update_summary_sheet(option, position):
+    """Append a row to the Summary sheet when a new position is created."""
+    try:
+        service = get_google_sheets_service()
+        occ = build_occ_symbol(option["symbol"], option["exp_date"], option["strike"])
+
+        spreadsheet = service.spreadsheets().get(spreadsheetId=POSITION_TRACKER_SHEET_ID).execute()
+        tabs = {s["properties"]["title"]: s["properties"]["sheetId"] for s in spreadsheet["sheets"]}
+
+        if "Summary" not in tabs:
+            return
+
+        sheet_id = tabs["Summary"]
+
+        # Read existing rows to find next empty row
+        result = service.spreadsheets().values().get(
+            spreadsheetId=POSITION_TRACKER_SHEET_ID,
+            range="'Summary'!A:J",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute()
+        next_row = len(result.get("values", []))
+
+        LIGHT_GRAY = {"red": 0.949, "green": 0.949, "blue": 0.949}
+        BORDER_CLR = {"red": 0.698, "green": 0.698, "blue": 0.698}
+        THIN = {"style": "SOLID", "width": 1, "color": BORDER_CLR}
+        ALL_BORDERS = {"top": THIN, "bottom": THIN, "left": THIN, "right": THIN}
+        d_fmt = {"backgroundColor": LIGHT_GRAY, "borders": ALL_BORDERS, "horizontalAlignment": "CENTER",
+                 "verticalAlignment": "MIDDLE", "textFormat": {"fontSize": 10}}
+        n_fmt = {**d_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+
+        symbol = option["symbol"]
+        strike = int(option["strike"])
+        put_price = float(option.get("put_price", 0) or 0)
+        company = option.get("name", symbol)
+        exp_date = option.get("exp_date", "")
+        today_str = date.today().isoformat()
+
+        cells = [
+            {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": exp_date}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": today_str}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"numberValue": put_price}, "userEnteredFormat": n_fmt},
+            {"userEnteredValue": {"numberValue": put_price}, "userEnteredFormat": n_fmt},
+            {"userEnteredValue": {"numberValue": 0.00}, "userEnteredFormat": n_fmt},
+            {"userEnteredValue": {"stringValue": "OPEN"}, "userEnteredFormat": d_fmt},
+        ]
+
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=POSITION_TRACKER_SHEET_ID,
+            body={"requests": [{"updateCells": {
+                "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "rows": [{"values": cells}],
+                "fields": "userEnteredValue,userEnteredFormat",
+            }}]},
+        ).execute()
+    except Exception as e:
+        pass  # Don't block the main flow if Summary update fails
+
+
 def build_options_dataframe(options, existing_option_ids):
     """Build a clean DataFrame from options data for display."""
     rows = []
@@ -614,7 +677,9 @@ def trade_confirmation_dialog(option):
                     else:
                         # Record in Supabase
                         toggle_selection(option["id"], True)
-                        create_position(option)
+                        pos = create_position(option)
+                        # Update Summary sheet
+                        update_summary_sheet(option, pos)
                         st.cache_data.clear()
                         st.session_state.dry_run_result = None
                         st.toast(f"Position tracked: {option['symbol']} {option['strike']:.0f} Put", icon="✅")
@@ -679,10 +744,11 @@ def trade_confirmation_dialog(option):
 
                         # Record in Supabase
                         toggle_selection(option["id"], True)
-                        create_position(option, order_id=order_id, order_status=order_status)
+                        pos = create_position(option, order_id=order_id, order_status=order_status)
 
-                        # Also add to Google Sheets
+                        # Also add to Google Sheets + Summary
                         add_position_to_sheets(option)
+                        update_summary_sheet(option, pos)
 
                         st.session_state.dry_run_result = None
                         st.cache_data.clear()
