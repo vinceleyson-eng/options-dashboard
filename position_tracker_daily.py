@@ -14,7 +14,7 @@ Schedule: Added to daily_scan_cron.bat (10 PM GMT+8 = 10 AM ET)
 import asyncio
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
 from supabase import create_client
@@ -272,7 +272,7 @@ def process_shadow_positions(sb, shadows, underlying_prices, option_prices, toda
     return inserted
 
 
-def push_snapshots_to_sheets(results):
+def push_snapshots_to_sheets(results, market_date=None):
     """Append daily snapshot rows to Google Sheets Position Tracker.
 
     Per-contract tabs (POS-ADBE-225P). 9 columns: Date, OCC, Expiration,
@@ -301,8 +301,9 @@ def push_snapshots_to_sheets(results):
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
 
         NUM_COLS = 9
-        today_str = date.today().isoformat()
-        today_serial = (datetime.now() - datetime(1899, 12, 30)).days
+        mdate = market_date or get_market_date()
+        today_str = mdate.isoformat()
+        today_serial = (datetime(mdate.year, mdate.month, mdate.day) - datetime(1899, 12, 30)).days
         appended = 0
 
         tab_data_cache = {}
@@ -488,8 +489,22 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
         print(f"  Summary sheet ERROR: {e}")
 
 
+def get_market_date():
+    """Return the market date for this run.
+
+    Cron is scheduled for 10 PM GMT+8 (= 10 AM ET). If run after midnight
+    GMT+8 (e.g., manual re-run or delayed execution), use yesterday's date
+    so the snapshot is tagged to the correct trading day.
+    Cutoff: before 5 AM GMT+8 (= before 5 PM ET, after market close).
+    """
+    now = datetime.now()
+    if now.hour < 5:
+        return (now - timedelta(days=1)).date()
+    return now.date()
+
+
 async def main():
-    today = date.today()
+    today = get_market_date()
     print(f"Position Tracker — {today}")
     print("=" * 50)
 
@@ -546,7 +561,7 @@ async def main():
 
         # Push to Google Sheets
         print("Pushing to Google Sheets...")
-        push_snapshots_to_sheets(results)
+        push_snapshots_to_sheets(results, market_date=today)
         print()
 
     # Process shadow positions
