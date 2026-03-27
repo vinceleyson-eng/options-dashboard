@@ -200,10 +200,11 @@ for (symbol, strike_int), pos_list in sorted(groups.items()):
         "fields": "userEnteredValue,userEnteredFormat",
     }})
 
-    # Row 3: Expiration(s), Quantity, Direction
+    # Row 3: Expiration(s), Quantity, Direction, Purchase Date
+    opened_date = str(first.get("opened_at", ""))[:10]
     reqs.append({"updateCells": {
         "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3,
-                  "startColumnIndex": 0, "endColumnIndex": 6},
+                  "startColumnIndex": 0, "endColumnIndex": 8},
         "rows": [{"values": [
             {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": bold_f},
             {"userEnteredValue": {"stringValue": exp_display}},
@@ -211,6 +212,8 @@ for (symbol, strike_int), pos_list in sorted(groups.items()):
             {"userEnteredValue": {"numberValue": quantity}},
             {"userEnteredValue": {"stringValue": "Direction:"}, "userEnteredFormat": bold_f},
             {"userEnteredValue": {"stringValue": direction}},
+            {"userEnteredValue": {"stringValue": "Purchase Date:"}, "userEnteredFormat": bold_f},
+            {"userEnteredValue": {"stringValue": opened_date}},
         ]}],
         "fields": "userEnteredValue,userEnteredFormat",
     }})

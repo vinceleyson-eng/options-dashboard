@@ -488,10 +488,10 @@ def add_position_to_sheets(option):
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # Row 3: Expiration, Quantity, Direction
+            # Row 3: Expiration, Quantity, Direction, Purchase Date
             requests.append({"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3,
-                          "startColumnIndex": 0, "endColumnIndex": 6},
+                          "startColumnIndex": 0, "endColumnIndex": 8},
                 "rows": [{"values": [
                     {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": bold},
                     {"userEnteredValue": {"stringValue": exp_str}},
@@ -499,6 +499,8 @@ def add_position_to_sheets(option):
                     {"userEnteredValue": {"numberValue": 1}},
                     {"userEnteredValue": {"stringValue": "Direction:"}, "userEnteredFormat": bold},
                     {"userEnteredValue": {"stringValue": "Short"}},
+                    {"userEnteredValue": {"stringValue": "Purchase Date:"}, "userEnteredFormat": bold},
+                    {"userEnteredValue": {"stringValue": today_str}},
                 ]}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
