@@ -47,6 +47,13 @@ def build_occ(symbol, exp_date, strike):
     exp_dt = _dt.strptime(exp_date, "%Y-%m-%d")
     return f"{symbol:<6}{exp_dt.strftime('%y%m%d')}P{int(float(strike) * 1000):08d}"
 
+def build_tab_label(occ, opened_date):
+    """Build tab name: OCC + opened date (e.g., ADBE  260515P00215000 (20260320))."""
+    if opened_date:
+        date_str = str(opened_date).replace("-", "")[:8]
+        return f"{occ} ({date_str})"
+    return occ
+
 # Load data
 scans = sb.table("daily_scans").select("id, scan_date").order("scan_date").execute().data
 scan_map = {s["id"]: s["scan_date"] for s in scans}
@@ -68,14 +75,15 @@ for pos in positions:
         "position_id", pos["id"]).order("snapshot_date").execute().data
     all_snapshots[pos["id"]] = snaps
 
-# Group positions by symbol+strike (merge different expirations)
-# Group by OCC (one tab per OCC)
+# Group by OCC + opened date (one tab per trade)
 groups = defaultdict(list)
 for pos in positions:
     occ = build_occ(pos["symbol"], pos["exp_date"], float(pos["strike"]))
-    groups[occ].append(pos)
+    opened_date = str(pos.get("opened_at", ""))[:10]
+    tab_key = build_tab_label(occ, opened_date)
+    groups[tab_key].append(pos)
 
-print(f"Unique OCC contracts: {len(groups)}")
+print(f"Unique position tabs: {len(groups)}")
 
 # Clear old tabs
 meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
@@ -90,8 +98,8 @@ if del_reqs:
     service.spreadsheets().batchUpdate(spreadsheetId=SHEET_ID, body={"requests": del_reqs}).execute()
 print("Cleared old tabs")
 
-for occ_key, pos_list in sorted(groups.items()):
-    tab_name = occ_key  # OCC as tab name
+for tab_key, pos_list in sorted(groups.items()):
+    tab_name = tab_key  # Tab name includes date: OCC (YYYYMMDD)
 
     # Use first position's info for header
     first = pos_list[0]
@@ -101,6 +109,7 @@ for occ_key, pos_list in sorted(groups.items()):
     price_paid = float(first.get("price_paid", 0) or 0)
     quantity = int(first.get("quantity", 1) or 1)
     direction = first.get("direction", "Short")
+    occ = build_occ(symbol, first["exp_date"], float(first["strike"]))
 
     # Collect daily data for this OCC
     daily_data = []
@@ -108,7 +117,6 @@ for occ_key, pos_list in sorted(groups.items()):
         exp_date = pos["exp_date"]
         pp = float(pos.get("price_paid", 0) or 0)
         opened_date = str(pos.get("opened_at", ""))[:10]
-        occ = occ_key
 
         # Always add an entry row for the opened date using price_paid
         # This ensures the first row matches the header Price Paid
@@ -183,7 +191,7 @@ for occ_key, pos_list in sorted(groups.items()):
 
     # Fill gaps: interpolate between known data points with slight variation
     import random
-    random.seed(hash(occ_key))  # Deterministic per contract
+    random.seed(hash(tab_key))  # Deterministic per contract
 
     if daily_data:
         existing_dates = {d["date"] for d in daily_data}

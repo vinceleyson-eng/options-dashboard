@@ -26,6 +26,13 @@ def build_occ(symbol, exp_date, strike):
     exp_dt = _dt.strptime(exp_date, "%Y-%m-%d")
     return f"{symbol:<6}{exp_dt.strftime('%y%m%d')}P{int(float(strike) * 1000):08d}"
 
+def build_tab_label(occ, opened_date):
+    """Build tab name: OCC + opened date (e.g., ADBE  260515P00215000 (20260320))."""
+    if opened_date:
+        date_str = str(opened_date).replace("-", "")[:8]
+        return f"{occ} ({date_str})"
+    return occ
+
 DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
 LIGHT_GRAY = {"red": 0.949, "green": 0.949, "blue": 0.949}
 WHITE_TEXT = {"red": 1, "green": 1, "blue": 1}
@@ -74,15 +81,16 @@ for pos in positions:
     strike_int = int(strike)
     exp_date = pos["exp_date"]
     occ = build_occ(symbol, exp_date, strike)
+    opened_date = str(pos.get("opened_at", ""))[:10]
+    tab_name = build_tab_label(occ, opened_date)
 
-    if occ in existing_tabs:
+    if tab_name in existing_tabs:
         continue  # Already on sheet
 
     company = pos.get("name", symbol)
     price_paid = float(pos.get("price_paid", 0) or 0)
     quantity = int(pos.get("quantity", 1) or 1)
     direction = pos.get("direction", "Short")
-    opened_date = str(pos.get("opened_at", ""))[:10]
 
     # Collect data: entry row + scan data after opened + snapshots
     daily_data = []
@@ -151,12 +159,12 @@ for pos in positions:
             deduped.append(d)
     daily_data = deduped
 
-    print(f"Creating {occ}: {len(daily_data)} rows")
+    print(f"Creating {tab_name}: {len(daily_data)} rows")
 
     try:
         add_result = service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
-            body={"requests": [{"addSheet": {"properties": {"title": occ}}}]},
+            body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
         ).execute()
         sheet_id = add_result["replies"][0]["addSheet"]["properties"]["sheetId"]
     except Exception as e:
@@ -261,7 +269,7 @@ for pos in positions:
 
     try:
         service.spreadsheets().batchUpdate(spreadsheetId=SHEET_ID, body={"requests": reqs}).execute()
-        existing_tabs[occ] = sheet_id
+        existing_tabs[tab_name] = sheet_id
     except Exception as e:
         print(f"  Error: {e}")
 
@@ -324,6 +332,7 @@ for i, pos in enumerate(sorted(positions, key=lambda p: (p["symbol"], float(p["s
     company = pos.get("name", symbol)
     price_paid = float(pos.get("price_paid", 0) or 0)
     opened_date = str(pos.get("opened_at", ""))[:10]
+    tab_label = build_tab_label(occ, opened_date)
     status = pos.get("status", "open").upper()
 
     # Get latest option price from snapshots
@@ -337,7 +346,7 @@ for i, pos in enumerate(sorted(positions, key=lambda p: (p["symbol"], float(p["s
     pl = round(price_paid - current_price, 2)
 
     cells = [
-        {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
+        {"userEnteredValue": {"stringValue": tab_label}, "userEnteredFormat": d_fmt},
         {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
         {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
         {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": d_fmt},

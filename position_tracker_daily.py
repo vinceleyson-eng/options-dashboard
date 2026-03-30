@@ -45,9 +45,13 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
-def build_tab_name(symbol, strike, exp_date, existing_tabs=None):
-    """Build tab name using OCC symbol (e.g., ADBE  260515P00215000)."""
-    return build_occ_symbol(symbol, exp_date, strike)
+def build_tab_name(symbol, strike, exp_date, opened_date=None, existing_tabs=None):
+    """Build tab name: OCC symbol + opened date (e.g., ADBE  260515P00215000 (20260330))."""
+    occ = build_occ_symbol(symbol, exp_date, strike)
+    if opened_date:
+        date_str = str(opened_date).replace("-", "")[:8]
+        return f"{occ} ({date_str})"
+    return occ
 
 
 def build_streamer_symbol(symbol, exp_date, strike):
@@ -315,8 +319,9 @@ def push_snapshots_to_sheets(results, market_date=None):
             exp_date = pos["exp_date"]
             price_paid = float(pos.get("price_paid", 0) or 0)
 
+            opened_date = str(pos.get("opened_at", ""))[:10]
             occ = build_occ_symbol(symbol, exp_date, strike)
-            tab_name = build_tab_name(symbol, strike, exp_date, existing_tabs)
+            tab_name = build_tab_name(symbol, strike, exp_date, opened_date=opened_date, existing_tabs=existing_tabs)
 
             if tab_name not in existing_tabs:
                 print(f"  Sheets: no tab {tab_name}, skipping")
@@ -448,6 +453,7 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
             opened_date = str(pos.get("opened_at", ""))[:10]
 
             occ = build_occ_symbol(symbol, exp_date, strike)
+            tab_label = build_tab_name(symbol, strike, exp_date, opened_date=opened_date)
 
             # Get current option price from results or snapshots
             r = result_by_id.get(pos["id"])
@@ -459,7 +465,7 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
             pl = round(price_paid - current_price, 2)
 
             cells = [
-                {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": tab_label}, "userEnteredFormat": d_fmt},
                 {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
                 {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
                 {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": d_fmt},

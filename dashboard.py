@@ -327,9 +327,13 @@ def build_occ_symbol(symbol, exp_date, strike):
     return f"{symbol:<6}{exp_code}P{strike_code}"
 
 
-def build_tab_name(symbol, strike, exp_date, existing_tabs=None):
-    """Build tab name using OCC symbol (e.g., ADBE  260515P00215000)."""
-    return build_occ_symbol(symbol, exp_date, strike)
+def build_tab_name(symbol, strike, exp_date, opened_date=None, existing_tabs=None):
+    """Build tab name: OCC symbol + opened date (e.g., ADBE  260515P00215000 (20260330))."""
+    occ = build_occ_symbol(symbol, exp_date, strike)
+    if opened_date:
+        date_str = str(opened_date).replace("-", "")[:8]
+        return f"{occ} ({date_str})"
+    return occ
 
 
 def add_position_to_sheets(option):
@@ -345,11 +349,12 @@ def add_position_to_sheets(option):
         symbol = option["symbol"]
         strike = int(option["strike"])
         occ = build_occ_symbol(symbol, option["exp_date"], option["strike"])
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
 
         # Get existing tabs
         spreadsheet = service.spreadsheets().get(spreadsheetId=POSITION_TRACKER_SHEET_ID).execute()
         existing_tabs = {s["properties"]["title"]: s["properties"]["sheetId"] for s in spreadsheet["sheets"]}
-        tab_name = build_tab_name(symbol, strike, option["exp_date"], existing_tabs)
+        tab_name = build_tab_name(symbol, strike, option["exp_date"], opened_date=today_str, existing_tabs=existing_tabs)
 
         # Colors & formatting constants
         DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
@@ -540,7 +545,9 @@ def update_summary_sheet(option, position):
     """Append a row to the Summary sheet when a new position is created."""
     try:
         service = get_google_sheets_service()
+        today_str = date.today().isoformat()
         occ = build_occ_symbol(option["symbol"], option["exp_date"], option["strike"])
+        tab_name = build_tab_name(option["symbol"], int(option["strike"]), option["exp_date"], opened_date=today_str)
 
         spreadsheet = service.spreadsheets().get(spreadsheetId=POSITION_TRACKER_SHEET_ID).execute()
         tabs = {s["properties"]["title"]: s["properties"]["sheetId"] for s in spreadsheet["sheets"]}
@@ -571,10 +578,9 @@ def update_summary_sheet(option, position):
         put_price = float(option.get("put_price", 0) or 0)
         company = option.get("name", symbol)
         exp_date = option.get("exp_date", "")
-        today_str = date.today().isoformat()
 
         cells = [
-            {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": tab_name}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": d_fmt},
@@ -845,17 +851,15 @@ if page == "Daily Research":
     if show_selected_only:
         filtered = [o for o in filtered if o.get("selected")]
 
-    # Get existing positions for checkbox state — match by symbol+strike+exp
+    # Get existing positions for checkbox state — match by scan_option_id only
+    # Same contract on a different scan date can be ordered again (different sheet tab)
     existing_positions = load_all_positions()
     existing_option_ids = {p["scan_option_id"] for p in existing_positions if p.get("scan_option_id")}
-    existing_contracts = {(p["symbol"], float(p["strike"]), p["exp_date"])
-                          for p in existing_positions if p.get("symbol")}
 
     # Build DataFrame with Scan Date column
     rows = []
     for o in filtered:
-        has_position = (o["id"] in existing_option_ids or
-                        (o.get("symbol"), float(o.get("strike", 0)), o.get("exp_date")) in existing_contracts)
+        has_position = o["id"] in existing_option_ids
         rows.append({
             "Select": has_position or o.get("selected", False),
             "Scan Date": o.get("scan_date", "-"),
