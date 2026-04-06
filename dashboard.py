@@ -463,37 +463,60 @@ def add_position_to_sheets(option):
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # Row 2: Symbol, Name, Strike, Price Paid
+            # Fetch VIX for this scan date
+            scan_vix = None
+            if option.get("scan_id"):
+                scan_rec = get_supabase().table("daily_scans").select("vix").eq("id", option["scan_id"]).execute().data
+                if scan_rec and scan_rec[0].get("vix") is not None:
+                    scan_vix = float(scan_rec[0]["vix"])
+
+            # IVx and Expected Move from option data
+            iv_raw = option.get("iv")  # decimal, e.g. 0.577
+            iv_pct = round(iv_raw * 100, 1) if iv_raw else None  # e.g. 57.7
+            exp_move = None
+            if iv_raw and option.get("underlying_price") and option.get("dte"):
+                import math as _math
+                exp_move = round(float(option["underlying_price"]) * iv_raw * _math.sqrt(float(option["dte"]) / 365), 2)
+
+            # Row 2: Symbol, Name, Strike, Price Paid, IVx, Range
+            row2_cells = [
+                {"userEnteredValue": {"stringValue": "Symbol:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": symbol}},
+                {"userEnteredValue": {"stringValue": "Name:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": name}},
+                {"userEnteredValue": {"stringValue": "Strike:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"numberValue": strike}},
+                {"userEnteredValue": {"stringValue": "Price Paid:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num},
+                {"userEnteredValue": {"stringValue": "IVx:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": f"{iv_pct}%"} if iv_pct is not None else {"stringValue": "N/A"}},
+                {"userEnteredValue": {"stringValue": "Range:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": f"±${exp_move:.2f}"} if exp_move is not None else {"stringValue": "N/A"}},
+            ]
             requests.append({"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2,
-                          "startColumnIndex": 0, "endColumnIndex": 8},
-                "rows": [{"values": [
-                    {"userEnteredValue": {"stringValue": "Symbol:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"stringValue": symbol}},
-                    {"userEnteredValue": {"stringValue": "Name:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"stringValue": name}},
-                    {"userEnteredValue": {"stringValue": "Strike:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"numberValue": strike}},
-                    {"userEnteredValue": {"stringValue": "Price Paid:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"numberValue": float(put_price)}, "userEnteredFormat": num},
-                ]}],
+                          "startColumnIndex": 0, "endColumnIndex": 12},
+                "rows": [{"values": row2_cells}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
-            # Row 3: Expiration, Quantity, Direction, Purchase Date
+            # Row 3: Expiration, Quantity, Direction, Purchase Date, VIX
+            row3_cells = [
+                {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": exp_str}},
+                {"userEnteredValue": {"stringValue": "Quantity:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"numberValue": 1}},
+                {"userEnteredValue": {"stringValue": "Direction:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": "Short"}},
+                {"userEnteredValue": {"stringValue": "Purchase Date:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"stringValue": today_str}},
+                {"userEnteredValue": {"stringValue": "VIX:"}, "userEnteredFormat": bold},
+                {"userEnteredValue": {"numberValue": scan_vix} if scan_vix is not None else {"stringValue": "N/A"}, "userEnteredFormat": num if scan_vix is not None else {}},
+            ]
             requests.append({"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3,
-                          "startColumnIndex": 0, "endColumnIndex": 8},
-                "rows": [{"values": [
-                    {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"stringValue": exp_str}},
-                    {"userEnteredValue": {"stringValue": "Quantity:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"numberValue": 1}},
-                    {"userEnteredValue": {"stringValue": "Direction:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"stringValue": "Short"}},
-                    {"userEnteredValue": {"stringValue": "Purchase Date:"}, "userEnteredFormat": bold},
-                    {"userEnteredValue": {"stringValue": today_str}},
-                ]}],
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "rows": [{"values": row3_cells}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }})
 
@@ -560,7 +583,7 @@ def update_summary_sheet(option, position):
         # Read existing rows to find next empty row
         result = service.spreadsheets().values().get(
             spreadsheetId=POSITION_TRACKER_SHEET_ID,
-            range="'Summary'!A:J",
+            range="'Summary'!A:K",
             valueRenderOption="FORMATTED_VALUE",
         ).execute()
         next_row = len(result.get("values", []))
@@ -579,8 +602,34 @@ def update_summary_sheet(option, position):
         company = option.get("name", symbol)
         exp_date = option.get("exp_date", "")
 
+        # Fetch VIX for this scan date
+        scan_vix = None
+        if option.get("scan_id"):
+            scan_rec = get_supabase().table("daily_scans").select("vix").eq("id", option["scan_id"]).execute().data
+            if scan_rec and scan_rec[0].get("vix") is not None:
+                scan_vix = float(scan_rec[0]["vix"])
+
+        # IVx and Expected Move
+        iv_raw = option.get("iv")
+        iv_pct = round(iv_raw * 100, 1) if iv_raw else None
+        sum_exp_move = None
+        if iv_raw and option.get("underlying_price") and option.get("dte"):
+            import math as _math
+            sum_exp_move = round(float(option["underlying_price"]) * iv_raw * _math.sqrt(float(option["dte"]) / 365), 2)
+
+        # Build hyperlink to the trade tab if it exists
+        tab_gid = tabs.get(tab_name)
+        if tab_gid is not None:
+            occ_cell = {"userEnteredValue": {"formulaValue": f'=HYPERLINK("#gid={tab_gid}", "{tab_name}")'}, "userEnteredFormat": d_fmt}
+        else:
+            occ_cell = {"userEnteredValue": {"stringValue": tab_name}, "userEnteredFormat": d_fmt}
+
+        # IVR
+        ivr = option.get("iv_rank")
+
+        SUMMARY_COLS = 14
         cells = [
-            {"userEnteredValue": {"stringValue": tab_name}, "userEnteredFormat": d_fmt},
+            occ_cell,
             {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"numberValue": strike}, "userEnteredFormat": d_fmt},
@@ -590,13 +639,17 @@ def update_summary_sheet(option, position):
             {"userEnteredValue": {"numberValue": put_price}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": 0.00}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"stringValue": "OPEN"}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": f"{round(float(ivr), 1)}%"} if ivr is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"numberValue": scan_vix} if scan_vix is not None else {"stringValue": "N/A"}, "userEnteredFormat": n_fmt if scan_vix is not None else d_fmt},
+            {"userEnteredValue": {"stringValue": f"{iv_pct}%"} if iv_pct is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": f"±${sum_exp_move:.2f}"} if sum_exp_move is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
         ]
 
         service.spreadsheets().batchUpdate(
             spreadsheetId=POSITION_TRACKER_SHEET_ID,
             body={"requests": [{"updateCells": {
                 "range": {"sheetId": sheet_id, "startRowIndex": next_row, "endRowIndex": next_row + 1,
-                          "startColumnIndex": 0, "endColumnIndex": 10},
+                          "startColumnIndex": 0, "endColumnIndex": SUMMARY_COLS},
                 "rows": [{"values": cells}],
                 "fields": "userEnteredValue,userEnteredFormat",
             }}]},
@@ -827,11 +880,22 @@ if page == "Daily Research":
     all_symbols = sorted(set(o["symbol"] for o in all_options))
 
     # Header metrics
-    col1, col2 = st.columns(2)
+    scan_dates_data = load_scan_dates()
+    latest_vix = None
+    vix_date = ""
+    if scan_dates_data:
+        latest_vix = scan_dates_data[0].get("vix")
+        vix_date = scan_dates_data[0].get("scan_date", "")
+
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Scan Dates", len(all_dates))
     with col2:
         st.metric("Symbols", len(all_symbols))
+    with col3:
+        st.metric("VIX", f"{latest_vix:.2f}" if latest_vix else "N/A")
+        if vix_date:
+            st.caption(f"As of {vix_date}")
 
     st.divider()
 
@@ -877,6 +941,7 @@ if page == "Daily Research":
             "Spread": round(o["bid_ask_spread"], 2) if o.get("bid_ask_spread") is not None else None,
             "Put Price": o.get("put_price"),
             "Underlying": o.get("underlying_price"),
+            "Range": round(float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None,
             "Earnings": str(o["earnings"]) if o.get("earnings") else "-",
             "_id": o["id"],
             "_has_position": has_position,
@@ -911,7 +976,7 @@ if page == "Daily Research":
     with col_export:
         export_cols = ["Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                        "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                       "Underlying", "Earnings"]
+                       "Underlying", "Range", "Earnings"]
         st.download_button(
             label="Export CSV",
             data=df[export_cols].to_csv(index=False),
@@ -923,7 +988,7 @@ if page == "Daily Research":
     # Display columns with Scan Date
     display_cols = ["Select", "Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                     "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                    "Underlying", "Earnings"]
+                    "Underlying", "Range", "Earnings"]
 
     column_config = {
         "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
@@ -942,6 +1007,7 @@ if page == "Daily Research":
         "Spread": st.column_config.NumberColumn("Spread", format="$%.2f", width="small"),
         "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
         "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f", width="medium"),
+        "Range": st.column_config.NumberColumn("Range", format="±$%.2f", width="small"),
         "Earnings": st.column_config.TextColumn("Earnings", width="small"),
     }
 
@@ -980,6 +1046,19 @@ elif page == "Open Positions":
         st.info("No open positions. Select options from the Daily Research page to create positions.")
         st.stop()
 
+    # Get VIX + IVR/Range for open positions
+    scan_dates_data = load_scan_dates()
+    latest_vix = scan_dates_data[0].get("vix") if scan_dates_data else None
+    vix_date = scan_dates_data[0].get("scan_date", "") if scan_dates_data else ""
+
+    # Fetch scan_option data for IVR + Range
+    sb = get_supabase()
+    so_ids = [p["scan_option_id"] for p in positions if p.get("scan_option_id")]
+    so_lookup = {}
+    if so_ids:
+        so_data = sb.table("scan_options").select("id, iv_rank, iv, underlying_price, dte").in_("id", so_ids).execute().data
+        so_lookup = {s["id"]: s for s in so_data}
+
     # Summary metrics
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
@@ -987,12 +1066,23 @@ elif page == "Open Positions":
     with col2:
         symbols = set(p["symbol"] for p in positions)
         st.metric("Symbols", len(symbols))
+    with col3:
+        st.metric("VIX", f"{latest_vix:.2f}" if latest_vix else "N/A")
+        if vix_date:
+            st.caption(f"As of {vix_date}")
 
     st.divider()
 
     # Positions table
     pos_rows = []
     for pos in positions:
+        so = so_lookup.get(pos.get("scan_option_id"), {})
+        iv_raw = so.get("iv")
+        ivr = so.get("iv_rank")
+        ul = so.get("underlying_price")
+        dte = so.get("dte")
+        range_val = round(float(ul) * float(iv_raw) * (float(dte) / 365) ** 0.5, 2) if iv_raw and ul and dte else None
+
         pos_rows.append({
             "Symbol": pos["symbol"],
             "Company": pos.get("name", "-"),
@@ -1003,6 +1093,8 @@ elif page == "Open Positions":
             "Price Paid": pos.get("price_paid"),
             "Exp Date": pos.get("exp_date", "-"),
             "Opened": str(pos.get("opened_at", ""))[:10],
+            "IVR %": round(float(ivr), 1) if ivr is not None else None,
+            "Range": range_val,
         })
 
     pos_df = pd.DataFrame(pos_rows)
@@ -1014,6 +1106,8 @@ elif page == "Open Positions":
             column_config={
                 "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
                 "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
+                "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
+                "Range": st.column_config.NumberColumn("Range", format="±$%.2f", width="small"),
             },
             width="stretch",
             hide_index=True,

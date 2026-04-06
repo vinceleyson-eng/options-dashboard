@@ -1,3 +1,10 @@
+# Force IPv4 — httplib2 tries IPv6 first which times out on some networks
+import socket
+_orig_getaddrinfo = socket.getaddrinfo
+def _ipv4_only(*args, **kwargs):
+    return [r for r in _orig_getaddrinfo(*args, **kwargs) if r[0] == socket.AF_INET]
+socket.getaddrinfo = _ipv4_only
+
 """Backfill Google Sheet tabs with daily data from scan_options + snapshots.
 
 One tab per symbol+strike (e.g., POS-ADBE-215P). Multiple expirations in same tab.
@@ -23,10 +30,51 @@ creds = service_account.Credentials.from_service_account_file(
     SA_PATH, scopes=["https://www.googleapis.com/auth/spreadsheets"])
 service = build("sheets", "v4", credentials=creds)
 
-NUM_COLS = 9
+NUM_COLS = 11
 
 def to_serial(ds):
     return (_dt.strptime(ds, "%Y-%m-%d") - _dt(1899, 12, 30)).days
+
+
+# Black-Scholes helpers for per-row IVx/Range calculation
+import math as _math
+from scipy.stats import norm as _norm
+from scipy.optimize import brentq as _brentq
+
+
+def _bs_put(S, K, T, r, sigma):
+    if T <= 0:
+        return max(K - S, 0)
+    if sigma <= 0:
+        return max(K * _math.exp(-r * T) - S, 0)
+    d1 = (_math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * _math.sqrt(T))
+    d2 = d1 - sigma * _math.sqrt(T)
+    return K * _math.exp(-r * T) * _norm.cdf(-d2) - S * _norm.cdf(-d1)
+
+
+def _implied_vol(market_price, S, K, T, r=0.0375):
+    if market_price <= 0 or T <= 0 or S <= 0 or K <= 0:
+        return None
+    intrinsic = max(K * _math.exp(-r * T) - S, 0)
+    if market_price < intrinsic:
+        return None
+    try:
+        return _brentq(lambda s: _bs_put(S, K, T, r, s) - market_price, 0.01, 5.0, xtol=1e-5)
+    except (ValueError, RuntimeError):
+        return None
+
+
+def _calc_iv_and_range(option_price, share_price, strike, dte, r=0.0375):
+    """Return (iv_pct, range_dollars) or (None, None)."""
+    if not (option_price and share_price and strike and dte and dte > 0):
+        return None, None
+    T = float(dte) / 365.0
+    iv = _implied_vol(float(option_price), float(share_price), float(strike), T, r)
+    if iv is None or iv < 0.01 or iv > 5.0:
+        return None, None
+    iv_pct = round(iv * 100, 1)
+    range_val = round(float(share_price) * iv * _math.sqrt(T), 2)
+    return iv_pct, range_val
 
 DARK_BLUE = {"red": 0.149, "green": 0.247, "blue": 0.447}
 LIGHT_GRAY = {"red": 0.949, "green": 0.949, "blue": 0.949}
@@ -55,16 +103,37 @@ def build_tab_label(occ, opened_date):
     return occ
 
 # Load data
-scans = sb.table("daily_scans").select("id, scan_date").order("scan_date").execute().data
+scans = sb.table("daily_scans").select("id, scan_date, vix").order("scan_date").execute().data
 scan_map = {s["id"]: s["scan_date"] for s in scans}
+scan_vix_map = {s["id"]: s.get("vix") for s in scans}
 
-all_options = sb.table("scan_options").select(
-    "scan_id, symbol, strike, exp_date, put_price, underlying_price, dte").execute().data
+# Paginate — Supabase default limit is 1000 rows
+all_options = []
+_offset = 0
+while True:
+    _batch = sb.table("scan_options").select("*").range(_offset, _offset + 999).execute().data
+    if not _batch:
+        break
+    all_options.extend(_batch)
+    if len(_batch) < 1000:
+        break
+    _offset += 1000
 option_lookup = {}
 for o in all_options:
     sd = scan_map.get(o["scan_id"])
     if sd:
         option_lookup[(o["symbol"], float(o["strike"]), o["exp_date"], sd)] = o
+
+# Build VIX + IV lookups: scan_option_id → vix / iv / ul / dte
+vix_by_scan_option = {}
+iv_by_scan_option = {}
+ul_by_scan_option = {}
+dte_by_scan_option = {}
+for o in all_options:
+    vix_by_scan_option[o["id"]] = scan_vix_map.get(o["scan_id"])
+    iv_by_scan_option[o["id"]] = o.get("iv")
+    ul_by_scan_option[o["id"]] = o.get("underlying_price")
+    dte_by_scan_option[o["id"]] = o.get("dte")
 
 positions = sb.table("positions").select("*").eq("status", "open").execute().data
 print(f"Loaded {len(all_options)} scan options, {len(positions)} positions")
@@ -248,7 +317,7 @@ for tab_key, pos_list in sorted(groups.items()):
                     "option_price": opt_price,
                     "price_paid": prev_real["price_paid"],
                 })
-        daily_data = filled
+        daily_data = filled if filled else daily_data
 
     # Expiration from first position
     exp_display = first["exp_date"]
@@ -285,10 +354,21 @@ for tab_key, pos_list in sorted(groups.items()):
         "fields": "userEnteredValue,userEnteredFormat",
     }})
 
-    # Row 2: Symbol, Name, Strike, Price Paid
+    # IVx and Expected Move (from scan_option_id of first position in group)
+    scan_opt_id = first.get("scan_option_id")
+    iv_raw = iv_by_scan_option.get(scan_opt_id)
+    iv_pct = round(float(iv_raw) * 100, 1) if iv_raw else None
+    ul_at_scan = ul_by_scan_option.get(scan_opt_id)
+    dte_at_scan = dte_by_scan_option.get(scan_opt_id)
+    exp_move = None
+    if iv_raw and ul_at_scan and dte_at_scan:
+        import math as _math
+        exp_move = round(float(ul_at_scan) * float(iv_raw) * _math.sqrt(float(dte_at_scan) / 365), 2)
+
+    # Row 2: Symbol, Name, Strike, Price Paid, IVx, Range
     reqs.append({"updateCells": {
         "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2,
-                  "startColumnIndex": 0, "endColumnIndex": 8},
+                  "startColumnIndex": 0, "endColumnIndex": 12},
         "rows": [{"values": [
             {"userEnteredValue": {"stringValue": "Symbol:"}, "userEnteredFormat": bold_f},
             {"userEnteredValue": {"stringValue": symbol}},
@@ -298,15 +378,20 @@ for tab_key, pos_list in sorted(groups.items()):
             {"userEnteredValue": {"numberValue": strike_int}},
             {"userEnteredValue": {"stringValue": "Price Paid:"}, "userEnteredFormat": bold_f},
             {"userEnteredValue": {"numberValue": price_paid}, "userEnteredFormat": num_f},
+            {"userEnteredValue": {"stringValue": "IVx:"}, "userEnteredFormat": bold_f},
+            {"userEnteredValue": {"stringValue": f"{iv_pct}%"} if iv_pct is not None else {"stringValue": "N/A"}},
+            {"userEnteredValue": {"stringValue": "Range:"}, "userEnteredFormat": bold_f},
+            {"userEnteredValue": {"stringValue": f"±${exp_move:.2f}"} if exp_move is not None else {"stringValue": "N/A"}},
         ]}],
         "fields": "userEnteredValue,userEnteredFormat",
     }})
 
-    # Row 3: Expiration(s), Quantity, Direction, Purchase Date
+    # Row 3: Expiration(s), Quantity, Direction, Purchase Date, VIX
     opened_date = str(first.get("opened_at", ""))[:10]
+    scan_vix = vix_by_scan_option.get(first.get("scan_option_id"))
     reqs.append({"updateCells": {
         "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3,
-                  "startColumnIndex": 0, "endColumnIndex": 8},
+                  "startColumnIndex": 0, "endColumnIndex": 10},
         "rows": [{"values": [
             {"userEnteredValue": {"stringValue": "Expiration:"}, "userEnteredFormat": bold_f},
             {"userEnteredValue": {"stringValue": exp_display}},
@@ -316,12 +401,14 @@ for tab_key, pos_list in sorted(groups.items()):
             {"userEnteredValue": {"stringValue": direction}},
             {"userEnteredValue": {"stringValue": "Purchase Date:"}, "userEnteredFormat": bold_f},
             {"userEnteredValue": {"stringValue": opened_date}},
+            {"userEnteredValue": {"stringValue": "VIX:"}, "userEnteredFormat": bold_f},
+            {"userEnteredValue": {"numberValue": float(scan_vix)} if scan_vix is not None else {"stringValue": "N/A"}, "userEnteredFormat": num_f if scan_vix is not None else {}},
         ]}],
         "fields": "userEnteredValue,userEnteredFormat",
     }})
 
     # Row 5: Headers
-    headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L"]
+    headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L", "IVx", "Range"]
     hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
     reqs.append({"updateCells": {
         "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5,
@@ -338,6 +425,9 @@ for tab_key, pos_list in sorted(groups.items()):
         diff = round(share_price - strike_int, 2) if share_price else 0
         pl = round(day["price_paid"] - opt_price, 2)
 
+        # Per-row IVx and Range (back-calculated from option price)
+        iv_pct, range_val = _calc_iv_and_range(opt_price, share_price, strike_int, day["dte"])
+
         cells = [
             {"userEnteredValue": {"numberValue": to_serial(day["date"])}, "userEnteredFormat": dt_fmt},
             {"userEnteredValue": {"stringValue": day["occ"]}, "userEnteredFormat": d_fmt},
@@ -348,6 +438,8 @@ for tab_key, pos_list in sorted(groups.items()):
             {"userEnteredValue": {"numberValue": diff}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": opt_price}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": n_fmt},
+            {"userEnteredValue": {"stringValue": f"{iv_pct}%"} if iv_pct is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"stringValue": f"±${range_val:.2f}"} if range_val is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
         ]
         reqs.append({"updateCells": {
             "range": {"sheetId": sheet_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
@@ -356,7 +448,7 @@ for tab_key, pos_list in sorted(groups.items()):
             "fields": "userEnteredValue,userEnteredFormat",
         }})
 
-    for ci, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80]):
+    for ci, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80, 60, 80]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": ci, "endIndex": ci + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize",

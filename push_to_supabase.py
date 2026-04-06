@@ -132,6 +132,7 @@ def main():
             "symbol": o["symbol"],
             "name": o.get("name"),
             "iv_rank": o.get("iv_rank"),
+            "iv": o.get("iv"),
             "dte": o.get("dte"),
             "delta": o.get("delta"),
             "exp_date": parse_date(o.get("exp_date")),

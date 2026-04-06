@@ -55,6 +55,7 @@ Custom web dashboard for daily options trading research and position management.
 | symbol | text | e.g., MU, NVDA |
 | name | text | Company name |
 | iv_rank | numeric | IVR percentage |
+| iv | numeric | Raw implied volatility (decimal, e.g. 0.577 = 57.7%). Used to calculate Expected Move. Populated from daily_scan.py → g.volatility (Greeks streamer). |
 | dte | integer | Days to expiration |
 | delta | numeric | |
 | exp_date | date | Expiration date |
@@ -153,8 +154,9 @@ Custom web dashboard for daily options trading research and position management.
 - `dashboard.py` — Streamlit app (run with `streamlit run dashboard.py`)
 - `push_to_supabase.py` — pushes scan_results.json to Supabase + auto-creates shadow positions
 - `position_tracker_daily.py` — daily cron: fetches live prices, writes snapshots to Supabase + appends rows to Google Sheets + rebuilds Summary sheet
-- `backfill_sheets.py` — rebuilds all Google Sheet tabs from Supabase scan_options + snapshots (run manually when sheet needs full refresh). Interpolates dummy prices for gap dates.
-- `rebuild_missing_and_summary.py` — recreates missing contract tabs + rebuilds Summary sheet (run manually)
+- `backfill_sheets.py` — rebuilds all Google Sheet tabs from Supabase scan_options + snapshots (run manually when sheet needs full refresh). Interpolates dummy prices for gap dates. **Deletes all existing tabs** — run `rebuild_missing_and_summary.py` AFTER this script.
+- `rebuild_missing_and_summary.py` — recreates missing contract tabs + rebuilds Summary sheet (run manually, must run AFTER `backfill_sheets.py`)
+- `backfill_april1.py` — one-time script that interpolated April 1st scan from March 31 + April 2 data (already run)
 - `migrate_sheets_to_supabase.py` — one-time migration from Google Sheets (already run)
 - `schema.sql` — database schema (already applied)
 - `.env` — Supabase + Tastytrade credentials
@@ -180,9 +182,10 @@ python push_to_supabase.py
 ```
 
 ## Data Migrated
-- 15 scan dates: 2026-03-09 through 2026-03-27
+- 19 scan dates: 2026-03-09 through 2026-04-02 (April 1 interpolated)
 - Monthly expirations only (weeklies purged 2026-03-16)
-- 31 open positions across 15 symbols
+- 33 open positions across 15 symbols
+- 1000 shadow positions for analytics
 - Mar 9-16: 219+ options across 6 dates
 
 ## Scan Data Columns (Stan's display order, 2026-03-20)
@@ -214,15 +217,15 @@ python push_to_supabase.py
 - **Google Sheets Position Tracker** — one tab per **trade** (e.g., `ADBE  260515P00215000 (20260320)`). Tab name = OCC symbol + opened date. Same contract on different day = separate tab. Format: dark blue title, white info rows, dark blue data headers, light gray data rows.
   - **Header rows (white, no borders):**
     - Row 1: Title (dark blue, merged) — "Position: COMPANY (SYMBOL) — STRIKE Put"
-    - Row 2: Symbol | Name | Strike | Price Paid
-    - Row 3: Expiration | Quantity | Direction | Purchase Date
+    - Row 2: Symbol | Name | Strike | Price Paid | IVx | Range (12 cols)
+    - Row 3: Expiration | Quantity | Direction | Purchase Date | VIX
   - **Data columns (9):** Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L
   - **P&L formula:** `Price Paid - Option Price` (positive = profit for short put, option price dropped)
   - **Dedup:** By (date, OCC) — one row per date per contract
   - **Tab naming:** `build_tab_name()` returns `OCC (YYYYMMDD)` where date is when trade was opened. Same contract on different day = different tab. (Same in dashboard.py, position_tracker_daily.py, backfill_sheets.py)
   - **Daily update:** `position_tracker_daily.py` appends new rows with live prices from TastyTrade + rebuilds Summary
   - **Backfill:** `backfill_sheets.py` rebuilds all tabs from scan_options + snapshots data. Gap dates filled with interpolated dummy prices (±3% noise between real data points).
-  - **Summary sheet** — first tab, all open positions: OCC, Symbol, Company, Strike, Expiration, Purchase Date, Price Paid, Current Price, P&L, Status. Rebuilt daily by cron + appended on new trades from dashboard.
+  - **Summary sheet** — first tab, all open positions sorted by purchase date: OCC (clickable hyperlink to trade tab), Symbol, Company, Strike, Expiration, Purchase Date, Price Paid, Current Price, P&L, Status, IVR, VIX, IVx, Range. Rebuilt daily by cron + appended on new trades from dashboard.
 - **OCC/OSI symbol** — each position identified by standard 21-char code (e.g., `ADBE  260515P00225000`). Built by `build_occ_symbol()`. Tab name adds opened date: `OCC (YYYYMMDD)`. Same OCC on different day = different tab/trade. Dedup prevents same OCC+date from being inserted twice (uses `FORMATTED_VALUE` to read dates correctly from Sheets).
 - **Shadow database** — auto-creates `shadow_positions` for every option in each scan (for analytics). Separate from user-selected `positions`. Backfilled 618 rows across 9 dates.
 - **Order type:** Sell-to-Open short put, Limit at mid price (put_price), Day order, Qty 1
@@ -274,6 +277,10 @@ python push_to_supabase.py
 - **Mar 17 data** had null POP/P50/underlying_price — backfilled with default IV=0.6 (approximate). Future scans use live Greeks.
 - **Bid/Ask null outside market hours** — scanner only gets real bid/ask quotes during market hours (9:30 AM–4:00 PM ET). Pre-market scans will have null bid/ask but valid put_price (theo price). Scheduled task runs at 10 AM ET to avoid this.
 - **Sandbox Cash account** has $0 equity buying power for naked puts — may need Reg T margin upgrade
+- **IPv6 timeout** — httplib2 tries IPv6 first which times out on Vince's network. All Google Sheets scripts patched with IPv4-only socket fix (2026-04-03).
+- **Google Sheets rate limit** — 60 writes/minute. Full backfill of 47 tabs hits this. `rebuild_missing_and_summary.py` picks up failed tabs. Always run after `backfill_sheets.py`.
+- **DTE gap** — changed dte_min from 45 to 40 (2026-04-03) because May 15 expiry fell below 45-day threshold causing empty scans.
+- **April 1st scan** — missed (cron didn't run). Backfilled by interpolating March 31 + April 2 data (`backfill_april1.py`). VIX 27.57, 90 options.
 
 ## Next Steps
 - Stan reviews dashboard and workflow (in progress)

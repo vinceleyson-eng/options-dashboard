@@ -1,3 +1,10 @@
+# Force IPv4 — httplib2 tries IPv6 first which times out on some networks
+import socket
+_orig_getaddrinfo = socket.getaddrinfo
+def _ipv4_only(*args, **kwargs):
+    return [r for r in _orig_getaddrinfo(*args, **kwargs) if r[0] == socket.AF_INET]
+socket.getaddrinfo = _ipv4_only
+
 """
 Daily Position Tracker — runs after daily scan.
 
@@ -12,14 +19,57 @@ Schedule: Added to daily_scan_cron.bat (10 PM GMT+8 = 10 AM ET)
 """
 
 import asyncio
+import math
 import os
 import sys
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
+from scipy.optimize import brentq
+from scipy.stats import norm
 from supabase import create_client
 
 load_dotenv()
+
+
+# --- Black-Scholes IV back-solver (module-level, reused across all positions) ---
+def _bs_put(S, K, T, r, sigma):
+    """Black-Scholes European put price."""
+    if T <= 0:
+        return max(K - S, 0)
+    if sigma <= 0:
+        return max(K * math.exp(-r * T) - S, 0)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+
+def calc_iv_and_range(option_price, share_price, strike, dte, rfr=0.0375):
+    """Back-solve IV from put price, then compute Range = S * IV * sqrt(T).
+
+    Returns (iv_pct, range_dollars) or (None, None) if inputs invalid
+    or option_price is below the discounted intrinsic floor.
+    """
+    try:
+        if not (option_price and share_price and strike and dte):
+            return None, None
+        P = float(option_price)
+        S = float(share_price)
+        K = float(strike)
+        T = float(dte) / 365.0
+        if P <= 0 or S <= 0 or K <= 0 or T <= 0:
+            return None, None
+        intrinsic = max(K * math.exp(-rfr * T) - S, 0)
+        if P < intrinsic:
+            return None, None
+        iv = brentq(lambda s: _bs_put(S, K, T, rfr, s) - P, 0.01, 5.0, xtol=1e-5)
+        if not (0.01 <= iv <= 5.0):
+            return None, None
+        iv_pct = round(iv * 100, 1)
+        range_val = round(S * iv * math.sqrt(T), 2)
+        return iv_pct, range_val
+    except (ValueError, RuntimeError, TypeError):
+        return None, None
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -304,7 +354,7 @@ def push_snapshots_to_sheets(results, market_date=None):
         num_fmt = {**data_fmt, "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
         date_fmt = {**data_fmt, "numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
 
-        NUM_COLS = 9
+        NUM_COLS = 11
         mdate = market_date or get_market_date()
         today_str = mdate.isoformat()
         today_serial = (datetime(mdate.year, mdate.month, mdate.day) - datetime(1899, 12, 30)).days
@@ -332,7 +382,7 @@ def push_snapshots_to_sheets(results, market_date=None):
             if tab_name not in tab_data_cache:
                 existing = sheets_service.spreadsheets().values().get(
                     spreadsheetId=POSITION_TRACKER_SHEET_ID,
-                    range=f"'{tab_name}'!A:I",
+                    range=f"'{tab_name}'!A:K",
                     valueRenderOption="FORMATTED_VALUE",
                 ).execute()
                 tab_data_cache[tab_name] = existing.get("values", [])
@@ -357,7 +407,12 @@ def push_snapshots_to_sheets(results, market_date=None):
             # P&L = Option Price - Price Paid
             pl = round(price_paid - option_price, 2)
 
-            # 9 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L
+            # Back-calculate IVx and Range from option price (module-level helper)
+            iv_pct_row, range_val = calc_iv_and_range(
+                option_price, r.get("share_price"), strike, r.get("dte")
+            )
+
+            # 11 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L, IVx, Range
             row_cells = [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
                 {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
@@ -368,6 +423,8 @@ def push_snapshots_to_sheets(results, market_date=None):
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"stringValue": f"{iv_pct_row}%"} if iv_pct_row is not None else {"stringValue": "N/A"}, "userEnteredFormat": data_fmt},
+                {"userEnteredValue": {"stringValue": f"±${range_val:.2f}"} if range_val is not None else {"stringValue": "N/A"}, "userEnteredFormat": data_fmt},
             ]
 
             sheets_service.spreadsheets().batchUpdate(
@@ -380,9 +437,12 @@ def push_snapshots_to_sheets(results, market_date=None):
                 }}]},
             ).execute()
 
+            iv_str = f"{iv_pct_row}%" if iv_pct_row is not None else "N/A"
+            range_str = f"±${range_val:.2f}" if range_val is not None else "N/A"
             existing_rows.append([today_str, occ, exp_date, str(r["dte"] or 0),
                                   str(r["share_price"] or 0), str(int(strike)),
-                                  str(difference), str(option_price), str(pl)])
+                                  str(difference), str(option_price), str(pl),
+                                  iv_str, range_str])
             appended += 1
 
         print(f"  Sheets: {appended} daily rows appended")
@@ -423,7 +483,7 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
         hdr_fmt = {"backgroundColor": DARK_BLUE, "borders": ALL_BORDERS, "horizontalAlignment": "CENTER",
                    "textFormat": {"foregroundColor": WHITE_TEXT, "fontSize": 10, "bold": True}}
 
-        SUMMARY_COLS = 10
+        SUMMARY_COLS = 14
 
         # Clear existing data (rows 4+, keep title + headers)
         sheets_service.spreadsheets().batchUpdate(
@@ -442,8 +502,27 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
         # Load ALL open positions (not just ones with results)
         all_positions = sb.table("positions").select("*").eq("status", "open").order("opened_at").execute().data
 
+        # Build VIX + IVx lookup: scan_option_id → vix / iv / underlying / dte / ivr
+        vix_lookup = {}
+        iv_lookup = {}       # scan_option_id → iv decimal
+        ul_lookup = {}       # scan_option_id → underlying_price at scan
+        dte_lookup = {}      # scan_option_id → dte at scan
+        ivr_lookup = {}      # scan_option_id → iv_rank
+        scan_option_ids = [p["scan_option_id"] for p in all_positions if p.get("scan_option_id")]
+        if scan_option_ids:
+            scan_opts = sb.table("scan_options").select("*").in_("id", scan_option_ids).execute().data
+            scan_ids = list(set(so["scan_id"] for so in scan_opts))
+            scans_data = sb.table("daily_scans").select("id, vix").in_("id", scan_ids).execute().data
+            scan_vix_map = {s["id"]: s.get("vix") for s in scans_data}
+            for so in scan_opts:
+                vix_lookup[so["id"]] = scan_vix_map.get(so["scan_id"])
+                iv_lookup[so["id"]] = so.get("iv")
+                ul_lookup[so["id"]] = so.get("underlying_price")
+                dte_lookup[so["id"]] = so.get("dte")
+                ivr_lookup[so["id"]] = so.get("iv_rank")
+
         reqs = []
-        for i, pos in enumerate(sorted(all_positions, key=lambda p: (p["symbol"], float(p["strike"])))):
+        for i, pos in enumerate(sorted(all_positions, key=lambda p: str(p.get("opened_at", ""))[:10])):
             row_idx = 3 + i
             symbol = pos["symbol"]
             strike = float(pos["strike"])
@@ -464,8 +543,28 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
 
             pl = round(price_paid - current_price, 2)
 
+            # Get IVR, VIX, IVx, ExpMove at time of scan
+            scan_opt_id = pos.get("scan_option_id")
+            ivr = ivr_lookup.get(scan_opt_id)
+            scan_vix = vix_lookup.get(scan_opt_id)
+            iv_raw = iv_lookup.get(scan_opt_id)
+            iv_pct = round(float(iv_raw) * 100, 1) if iv_raw else None
+            ul_at_scan = ul_lookup.get(scan_opt_id)
+            dte_at_scan = dte_lookup.get(scan_opt_id)
+            exp_move = None
+            if iv_raw and ul_at_scan and dte_at_scan:
+                import math as _math
+                exp_move = round(float(ul_at_scan) * float(iv_raw) * _math.sqrt(float(dte_at_scan) / 365), 2)
+
+            # Build hyperlink to the trade tab if it exists
+            tab_gid = tabs.get(tab_label)
+            if tab_gid is not None:
+                occ_cell = {"userEnteredValue": {"formulaValue": f'=HYPERLINK("#gid={tab_gid}", "{tab_label}")'}, "userEnteredFormat": d_fmt}
+            else:
+                occ_cell = {"userEnteredValue": {"stringValue": tab_label}, "userEnteredFormat": d_fmt}
+
             cells = [
-                {"userEnteredValue": {"stringValue": tab_label}, "userEnteredFormat": d_fmt},
+                occ_cell,
                 {"userEnteredValue": {"stringValue": symbol}, "userEnteredFormat": d_fmt},
                 {"userEnteredValue": {"stringValue": company}, "userEnteredFormat": d_fmt},
                 {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": d_fmt},
@@ -475,6 +574,10 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
                 {"userEnteredValue": {"numberValue": current_price}, "userEnteredFormat": n_fmt},
                 {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": n_fmt},
                 {"userEnteredValue": {"stringValue": "OPEN"}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": f"{round(float(ivr), 1)}%"} if ivr is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"numberValue": float(scan_vix)} if scan_vix is not None else {"stringValue": "N/A"}, "userEnteredFormat": n_fmt if scan_vix is not None else d_fmt},
+                {"userEnteredValue": {"stringValue": f"{iv_pct}%"} if iv_pct is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+                {"userEnteredValue": {"stringValue": f"±${exp_move:.2f}"} if exp_move is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
             ]
             reqs.append({"updateCells": {
                 "range": {"sheetId": summary_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
