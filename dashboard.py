@@ -880,22 +880,15 @@ if page == "Daily Research":
     all_symbols = sorted(set(o["symbol"] for o in all_options))
 
     # Header metrics
-    scan_dates_data = load_scan_dates()
-    latest_vix = None
-    vix_date = ""
-    if scan_dates_data:
-        latest_vix = scan_dates_data[0].get("vix")
-        vix_date = scan_dates_data[0].get("scan_date", "")
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         st.metric("Scan Dates", len(all_dates))
     with col2:
         st.metric("Symbols", len(all_symbols))
-    with col3:
-        st.metric("VIX", f"{latest_vix:.2f}" if latest_vix else "N/A")
-        if vix_date:
-            st.caption(f"As of {vix_date}")
+
+    # Build VIX lookup by scan_date for table column
+    scan_dates_data = load_scan_dates()
+    vix_by_date = {s["scan_date"]: s.get("vix") for s in scan_dates_data}
 
     st.divider()
 
@@ -942,6 +935,7 @@ if page == "Daily Research":
             "Put Price": o.get("put_price"),
             "Underlying": o.get("underlying_price"),
             "Range": round(float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None,
+            "VIX": round(float(vix_by_date.get(o.get("scan_date"), 0) or 0), 2) if vix_by_date.get(o.get("scan_date")) else None,
             "Earnings": str(o["earnings"]) if o.get("earnings") else "-",
             "_id": o["id"],
             "_has_position": has_position,
@@ -976,7 +970,7 @@ if page == "Daily Research":
     with col_export:
         export_cols = ["Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                        "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                       "Underlying", "Range", "Earnings"]
+                       "Underlying", "Range", "VIX", "Earnings"]
         st.download_button(
             label="Export CSV",
             data=df[export_cols].to_csv(index=False),
@@ -988,7 +982,7 @@ if page == "Daily Research":
     # Display columns with Scan Date
     display_cols = ["Select", "Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                     "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                    "Underlying", "Range", "Earnings"]
+                    "Underlying", "Range", "VIX", "Earnings"]
 
     column_config = {
         "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
@@ -1008,6 +1002,7 @@ if page == "Daily Research":
         "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
         "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f", width="medium"),
         "Range": st.column_config.NumberColumn("Range", format="±$%.2f", width="small"),
+        "VIX": st.column_config.NumberColumn("VIX", format="%.2f", width="small"),
         "Earnings": st.column_config.TextColumn("Earnings", width="small"),
     }
 
@@ -1046,30 +1041,29 @@ elif page == "Open Positions":
         st.info("No open positions. Select options from the Daily Research page to create positions.")
         st.stop()
 
-    # Get VIX + IVR/Range for open positions
-    scan_dates_data = load_scan_dates()
-    latest_vix = scan_dates_data[0].get("vix") if scan_dates_data else None
-    vix_date = scan_dates_data[0].get("scan_date", "") if scan_dates_data else ""
-
-    # Fetch scan_option data for IVR + Range
+    # Fetch scan_option data for IVR + Range + VIX
     sb = get_supabase()
     so_ids = [p["scan_option_id"] for p in positions if p.get("scan_option_id")]
     so_lookup = {}
+    vix_lookup = {}
     if so_ids:
-        so_data = sb.table("scan_options").select("id, iv_rank, iv, underlying_price, dte").in_("id", so_ids).execute().data
+        so_data = sb.table("scan_options").select("id, scan_id, iv_rank, iv, underlying_price, dte").in_("id", so_ids).execute().data
         so_lookup = {s["id"]: s for s in so_data}
+        # Get VIX per scan
+        scan_ids = list(set(s["scan_id"] for s in so_data))
+        if scan_ids:
+            scans_data = sb.table("daily_scans").select("id, vix").in_("id", scan_ids).execute().data
+            scan_vix = {s["id"]: s.get("vix") for s in scans_data}
+            for s in so_data:
+                vix_lookup[s["id"]] = scan_vix.get(s["scan_id"])
 
     # Summary metrics
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.metric("Open Positions", len(positions))
     with col2:
         symbols = set(p["symbol"] for p in positions)
         st.metric("Symbols", len(symbols))
-    with col3:
-        st.metric("VIX", f"{latest_vix:.2f}" if latest_vix else "N/A")
-        if vix_date:
-            st.caption(f"As of {vix_date}")
 
     st.divider()
 
@@ -1083,6 +1077,7 @@ elif page == "Open Positions":
         dte = so.get("dte")
         range_val = round(float(ul) * float(iv_raw) * (float(dte) / 365) ** 0.5, 2) if iv_raw and ul and dte else None
 
+        scan_vix = vix_lookup.get(pos.get("scan_option_id"))
         pos_rows.append({
             "Symbol": pos["symbol"],
             "Company": pos.get("name", "-"),
@@ -1095,6 +1090,7 @@ elif page == "Open Positions":
             "Opened": str(pos.get("opened_at", ""))[:10],
             "IVR %": round(float(ivr), 1) if ivr is not None else None,
             "Range": range_val,
+            "VIX": round(float(scan_vix), 2) if scan_vix is not None else None,
         })
 
     pos_df = pd.DataFrame(pos_rows)
@@ -1108,6 +1104,7 @@ elif page == "Open Positions":
                 "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
                 "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
                 "Range": st.column_config.NumberColumn("Range", format="±$%.2f", width="small"),
+                "VIX": st.column_config.NumberColumn("VIX", format="%.2f", width="small"),
             },
             width="stretch",
             hide_index=True,
