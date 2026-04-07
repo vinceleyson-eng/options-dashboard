@@ -300,7 +300,7 @@ for pos in positions:
     }})
 
     # Headers
-    headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L", "IVx", "Range"]
+    headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L", "Range", "Limit"]
     hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
     reqs.append({"updateCells": {
         "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5,
@@ -317,7 +317,8 @@ for pos in positions:
         diff = round(share_price - strike, 2) if share_price else 0
         pl = round(price_paid - opt_price, 2)
 
-        iv_pct_r, range_r = _calc_iv_range(opt_price, share_price, strike_int, day["dte"])
+        _iv_pct_r, range_r = _calc_iv_range(opt_price, share_price, strike_int, day["dte"])
+        limit_r = round(float(share_price) + range_r, 2) if range_r is not None and share_price else None
         cells = [
             {"userEnteredValue": {"numberValue": to_serial(day["date"])}, "userEnteredFormat": dt_fmt},
             {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
@@ -328,8 +329,8 @@ for pos in positions:
             {"userEnteredValue": {"numberValue": diff}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": opt_price}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": n_fmt},
-            {"userEnteredValue": {"stringValue": f"{iv_pct_r}%"} if iv_pct_r is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"stringValue": f"±${range_r:.2f}"} if range_r is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"numberValue": limit_r} if limit_r is not None else {"stringValue": "N/A"}, "userEnteredFormat": n_fmt if limit_r is not None else d_fmt},
         ]
         reqs.append({"updateCells": {
             "range": {"sheetId": sheet_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
@@ -338,7 +339,7 @@ for pos in positions:
             "fields": "userEnteredValue,userEnteredFormat",
         }})
 
-    for ci, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80, 60, 80]):
+    for ci, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80, 80, 90]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": ci, "endIndex": ci + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize",

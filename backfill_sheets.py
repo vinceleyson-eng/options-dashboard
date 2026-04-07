@@ -408,7 +408,7 @@ for tab_key, pos_list in sorted(groups.items()):
     }})
 
     # Row 5: Headers
-    headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L", "IVx", "Range"]
+    headers = ["Date", "OCC", "Expiration", "DTE", "Share Price", "Strike", "Difference", "Option Price", "P&L", "Range", "Limit"]
     hdr_cells = [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": hdr_fmt} for h in headers]
     reqs.append({"updateCells": {
         "range": {"sheetId": sheet_id, "startRowIndex": 4, "endRowIndex": 5,
@@ -425,8 +425,9 @@ for tab_key, pos_list in sorted(groups.items()):
         diff = round(share_price - strike_int, 2) if share_price else 0
         pl = round(day["price_paid"] - opt_price, 2)
 
-        # Per-row IVx and Range (back-calculated from option price)
-        iv_pct, range_val = _calc_iv_and_range(opt_price, share_price, strike_int, day["dte"])
+        # Per-row Range (back-calculated from option price) and Limit = Share Price + Range
+        _iv_pct, range_val = _calc_iv_and_range(opt_price, share_price, strike_int, day["dte"])
+        limit_val = round(float(share_price) + range_val, 2) if range_val is not None and share_price else None
 
         cells = [
             {"userEnteredValue": {"numberValue": to_serial(day["date"])}, "userEnteredFormat": dt_fmt},
@@ -438,8 +439,8 @@ for tab_key, pos_list in sorted(groups.items()):
             {"userEnteredValue": {"numberValue": diff}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": opt_price}, "userEnteredFormat": n_fmt},
             {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": n_fmt},
-            {"userEnteredValue": {"stringValue": f"{iv_pct}%"} if iv_pct is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
             {"userEnteredValue": {"stringValue": f"±${range_val:.2f}"} if range_val is not None else {"stringValue": "N/A"}, "userEnteredFormat": d_fmt},
+            {"userEnteredValue": {"numberValue": limit_val} if limit_val is not None else {"stringValue": "N/A"}, "userEnteredFormat": n_fmt if limit_val is not None else d_fmt},
         ]
         reqs.append({"updateCells": {
             "range": {"sheetId": sheet_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
@@ -448,7 +449,7 @@ for tab_key, pos_list in sorted(groups.items()):
             "fields": "userEnteredValue,userEnteredFormat",
         }})
 
-    for ci, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80, 60, 80]):
+    for ci, w in enumerate([100, 180, 100, 50, 100, 70, 90, 100, 80, 80, 90]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": ci, "endIndex": ci + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize",

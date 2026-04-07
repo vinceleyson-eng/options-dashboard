@@ -407,24 +407,26 @@ def push_snapshots_to_sheets(results, market_date=None):
             # P&L = Option Price - Price Paid
             pl = round(price_paid - option_price, 2)
 
-            # Back-calculate IVx and Range from option price (module-level helper)
-            iv_pct_row, range_val = calc_iv_and_range(
+            # Back-calculate Range from option price, compute Limit = Share Price + Range
+            _iv_pct_row, range_val = calc_iv_and_range(
                 option_price, r.get("share_price"), strike, r.get("dte")
             )
+            share_price_val = float(r["share_price"] or 0)
+            limit_val = round(share_price_val + range_val, 2) if range_val is not None and share_price_val else None
 
-            # 11 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L, IVx, Range
+            # 11 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L, Range, Limit
             row_cells = [
                 {"userEnteredValue": {"numberValue": today_serial}, "userEnteredFormat": date_fmt},
                 {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"stringValue": exp_date}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": r["dte"] or 0}, "userEnteredFormat": data_fmt},
-                {"userEnteredValue": {"numberValue": float(r["share_price"] or 0)}, "userEnteredFormat": num_fmt},
+                {"userEnteredValue": {"numberValue": share_price_val}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": int(strike)}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"numberValue": difference}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": option_price}, "userEnteredFormat": num_fmt},
                 {"userEnteredValue": {"numberValue": pl}, "userEnteredFormat": num_fmt},
-                {"userEnteredValue": {"stringValue": f"{iv_pct_row}%"} if iv_pct_row is not None else {"stringValue": "N/A"}, "userEnteredFormat": data_fmt},
                 {"userEnteredValue": {"stringValue": f"±${range_val:.2f}"} if range_val is not None else {"stringValue": "N/A"}, "userEnteredFormat": data_fmt},
+                {"userEnteredValue": {"numberValue": limit_val} if limit_val is not None else {"stringValue": "N/A"}, "userEnteredFormat": num_fmt if limit_val is not None else data_fmt},
             ]
 
             sheets_service.spreadsheets().batchUpdate(
@@ -437,12 +439,12 @@ def push_snapshots_to_sheets(results, market_date=None):
                 }}]},
             ).execute()
 
-            iv_str = f"{iv_pct_row}%" if iv_pct_row is not None else "N/A"
             range_str = f"±${range_val:.2f}" if range_val is not None else "N/A"
+            limit_str = str(limit_val) if limit_val is not None else "N/A"
             existing_rows.append([today_str, occ, exp_date, str(r["dte"] or 0),
-                                  str(r["share_price"] or 0), str(int(strike)),
+                                  str(share_price_val), str(int(strike)),
                                   str(difference), str(option_price), str(pl),
-                                  iv_str, range_str])
+                                  range_str, limit_str])
             appended += 1
 
         print(f"  Sheets: {appended} daily rows appended")
