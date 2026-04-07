@@ -157,6 +157,7 @@ Custom web dashboard for daily options trading research and position management.
 - `backfill_sheets.py` — rebuilds all Google Sheet tabs from Supabase scan_options + snapshots (run manually when sheet needs full refresh). Interpolates dummy prices for gap dates. **Deletes all existing tabs** — run `rebuild_missing_and_summary.py` AFTER this script.
 - `rebuild_missing_and_summary.py` — recreates missing contract tabs + rebuilds Summary sheet (run manually, must run AFTER `backfill_sheets.py`)
 - `backfill_april1.py` — one-time script that interpolated April 1st scan from March 31 + April 2 data (already run)
+- `backfill_iv_bsm.py` — back-calculates IV from historical put prices using Black-Scholes root-finding (run manually if iv column has nulls)
 - `migrate_sheets_to_supabase.py` — one-time migration from Google Sheets (already run)
 - `schema.sql` — database schema (already applied)
 - `.env` — Supabase + Tastytrade credentials
@@ -184,12 +185,12 @@ python push_to_supabase.py
 ## Data Migrated
 - 19 scan dates: 2026-03-09 through 2026-04-02 (April 1 interpolated)
 - Monthly expirations only (weeklies purged 2026-03-16)
-- 33 open positions across 15 symbols
-- 1000 shadow positions for analytics
-- Mar 9-16: 219+ options across 6 dates
+- 47 open positions across 15 symbols (as of 2026-04-06)
+- 1000+ shadow positions for analytics
+- All 1243 scan_options have IV back-calculated via Black-Scholes (backfill_iv_bsm.py)
 
-## Scan Data Columns (Stan's display order, 2026-03-20)
-**Select** (checkbox), Symbol, Company, **Strike, Put Price, DTE, POP**, IVR, Delta, Exp Date, P50, Bid, Ask, Spread, Underlying, Earnings
+## Scan Data Columns (Stan's display order, 2026-04-07)
+**Select** (checkbox), Symbol, Company, **Strike, Put Price, DTE, POP**, IVR, Delta, Exp Date, P50, Bid, Ask, Spread, Underlying, Range, Limit, VIX, Earnings
 
 ## Scanner Rules
 - **Monthly expirations only** — weeklies filtered out (Stan's requirement 2026-03-16)
@@ -219,13 +220,16 @@ python push_to_supabase.py
     - Row 1: Title (dark blue, merged) — "Position: COMPANY (SYMBOL) — STRIKE Put"
     - Row 2: Symbol | Name | Strike | Price Paid | IVx | Range (12 cols)
     - Row 3: Expiration | Quantity | Direction | Purchase Date | VIX
-  - **Data columns (9):** Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L
+  - **Data columns (11):** Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L, Range, Limit
+  - **IVx** — NOT a data column. Shown as a header metric in Row 2 (e.g., `IVx: 57.1%`) at time of trade. Same value for every row so it belongs in the header, not the table.
+  - **Range** = `Underlying × IV × √(DTE/365)` — ±$ expected move by expiration
+  - **Limit** = `Share Price + Range` — upper expected move boundary (Underlying + Range)
   - **P&L formula:** `Price Paid - Option Price` (positive = profit for short put, option price dropped)
   - **Dedup:** By (date, OCC) — one row per date per contract
   - **Tab naming:** `build_tab_name()` returns `OCC (YYYYMMDD)` where date is when trade was opened. Same contract on different day = different tab. (Same in dashboard.py, position_tracker_daily.py, backfill_sheets.py)
   - **Daily update:** `position_tracker_daily.py` appends new rows with live prices from TastyTrade + rebuilds Summary
   - **Backfill:** `backfill_sheets.py` rebuilds all tabs from scan_options + snapshots data. Gap dates filled with interpolated dummy prices (±3% noise between real data points).
-  - **Summary sheet** — first tab, all open positions sorted by purchase date: OCC (clickable hyperlink to trade tab), Symbol, Company, Strike, Expiration, Purchase Date, Price Paid, Current Price, P&L, Status, IVR, VIX, IVx, Range. Rebuilt daily by cron + appended on new trades from dashboard.
+  - **Summary sheet** — first tab, all open positions sorted by purchase date: OCC (clickable hyperlink to trade tab), Symbol, Company, Strike, Expiration, Purchase Date, Price Paid, Current Price, P&L, Status, IVR, VIX, IVx, Range. Rebuilt daily by cron + appended on new trades from dashboard. (IVx kept here for cross-position comparison.)
 - **OCC/OSI symbol** — each position identified by standard 21-char code (e.g., `ADBE  260515P00225000`). Built by `build_occ_symbol()`. Tab name adds opened date: `OCC (YYYYMMDD)`. Same OCC on different day = different tab/trade. Dedup prevents same OCC+date from being inserted twice (uses `FORMATTED_VALUE` to read dates correctly from Sheets).
 - **Shadow database** — auto-creates `shadow_positions` for every option in each scan (for analytics). Separate from user-selected `positions`. Backfilled 618 rows across 9 dates.
 - **Order type:** Sell-to-Open short put, Limit at mid price (put_price), Day order, Qty 1
@@ -234,7 +238,8 @@ python push_to_supabase.py
 - **CSV export buttons** on Daily Research (`options_{date}.csv`), Open Positions (`open_positions_{today}.csv`), Position History (`position_history_{today}.csv`) — added 2026-03-17
 - **Shadow Positions page** — browse all auto-tracked positions, filter by symbol/date, summary by symbol (avg premium, avg POP, avg delta, scan dates), CSV export. Added 2026-03-20.
 - **Select column** — `CheckboxColumn` (not a button). Streamlit has no `ButtonColumn` — per-row buttons break horizontal scroll. Checkbox ticked → trade dialog opens.
-- **Daily Research** — shows watchlist symbols only (from config). Defaults to latest scan date. Filter by date + symbol multiselect. Sort by Scan Date (default, newest first), Symbol, IVR%, POP%, P50%, Delta, DTE. No "Total Options" metric (removed to avoid client confusion).
+- **Daily Research** — shows watchlist symbols only (from config). Defaults to latest scan date. Filter by date + symbol multiselect. Sort by Scan Date (default, newest first), Symbol, IVR%, POP%, P50%, Delta, DTE. Columns include Range (±$ expected move), Limit (Underlying + Range), and VIX per scan date. No "Total Options" metric (removed to avoid client confusion).
+- **Open Positions** — all open positions with IVR%, Range, Limit, VIX columns (at time of trade). CSV export.
 
 ## Trading Flow (Phase 2)
 1. User ticks checkbox on an option in Daily Research
