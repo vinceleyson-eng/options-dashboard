@@ -183,11 +183,12 @@ python push_to_supabase.py
 ```
 
 ## Data Migrated
-- 19 scan dates: 2026-03-09 through 2026-04-02 (April 1 interpolated)
+- 21 scan dates: 2026-03-09 through 2026-04-07 (April 1 interpolated)
 - Monthly expirations only (weeklies purged 2026-03-16)
-- 47 open positions across 15 symbols (as of 2026-04-06)
+- 47 open positions across 15 symbols (as of 2026-04-07)
 - 1000+ shadow positions for analytics
-- All 1243 scan_options have IV back-calculated via Black-Scholes (backfill_iv_bsm.py)
+- All scan_options have IV back-calculated via Black-Scholes (backfill_iv_bsm.py)
+- 1315 total scan_options as of 2026-04-07
 
 ## Scan Data Columns (Stan's display order, 2026-04-07)
 **Select** (checkbox), Symbol, Company, **Strike, Put Price, DTE, POP**, IVR, Delta, Exp Date, P50, Bid, Ask, Spread, Underlying, Range, Limit, VIX, Earnings
@@ -284,10 +285,12 @@ python push_to_supabase.py
 - **Sandbox Cash account** has $0 equity buying power for naked puts — may need Reg T margin upgrade
 - **IPv6 timeout** — httplib2 tries IPv6 first which times out on Vince's network. All Google Sheets scripts patched with IPv4-only socket fix (2026-04-03).
 - **Google Sheets rate limit** — 60 writes/minute. Full backfill of 47 tabs hits this. `rebuild_missing_and_summary.py` picks up failed tabs. Always run after `backfill_sheets.py`.
-- **DTE gap** — changed dte_min from 45 to 40 (2026-04-03) because May 15 expiry fell below 45-day threshold causing empty scans.
+- **DTE gap** — changed dte_min from 45 to 40 (2026-04-03), then to 30 (2026-04-06) because May 15 expiry kept falling below threshold causing empty scans.
 - **April 1st scan** — missed (cron didn't run). Backfilled by interpolating March 31 + April 2 data (`backfill_april1.py`). VIX 27.57, 90 options.
+- **Cron logs missing** — logs folder only shows March 25 + March 28. Scans from April 3 onward run manually. Task Scheduler cron may not be logging or running reliably — needs investigation.
 
 ## Next Steps
 - Stan reviews dashboard and workflow (in progress)
 - Phase 3 specs from Stan after manual tracking period
 - Consider upgrading sandbox account to Reg T margin (currently Cash — $0 buying power for naked puts)
+- Investigate why Windows Task Scheduler cron stopped logging after 2026-03-28
