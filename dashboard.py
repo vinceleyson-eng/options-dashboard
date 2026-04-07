@@ -935,6 +935,7 @@ if page == "Daily Research":
             "Put Price": o.get("put_price"),
             "Underlying": o.get("underlying_price"),
             "Range": round(float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None,
+            "Limit": round(float(o["underlying_price"]) + float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None,
             "VIX": round(float(vix_by_date.get(o.get("scan_date"), 0) or 0), 2) if vix_by_date.get(o.get("scan_date")) else None,
             "Earnings": str(o["earnings"]) if o.get("earnings") else "-",
             "_id": o["id"],
@@ -970,7 +971,7 @@ if page == "Daily Research":
     with col_export:
         export_cols = ["Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                        "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                       "Underlying", "Range", "VIX", "Earnings"]
+                       "Underlying", "Range", "Limit", "VIX", "Earnings"]
         st.download_button(
             label="Export CSV",
             data=df[export_cols].to_csv(index=False),
@@ -982,7 +983,7 @@ if page == "Daily Research":
     # Display columns with Scan Date
     display_cols = ["Select", "Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                     "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                    "Underlying", "Range", "VIX", "Earnings"]
+                    "Underlying", "Range", "Limit", "VIX", "Earnings"]
 
     column_config = {
         "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
@@ -1002,6 +1003,7 @@ if page == "Daily Research":
         "Put Price": st.column_config.NumberColumn("Put Price", format="$%.2f", width="small"),
         "Underlying": st.column_config.NumberColumn("Underlying", format="$%.2f", width="medium"),
         "Range": st.column_config.NumberColumn("Range", format="±$%.2f", width="small"),
+        "Limit": st.column_config.NumberColumn("Limit", format="$%.2f", width="small"),
         "VIX": st.column_config.NumberColumn("VIX", format="%.2f", width="small"),
         "Earnings": st.column_config.TextColumn("Earnings", width="small"),
     }
@@ -1076,6 +1078,7 @@ elif page == "Open Positions":
         ul = so.get("underlying_price")
         dte = so.get("dte")
         range_val = round(float(ul) * float(iv_raw) * (float(dte) / 365) ** 0.5, 2) if iv_raw and ul and dte else None
+        limit_val = round(float(ul) + range_val, 2) if range_val is not None and ul else None
 
         scan_vix = vix_lookup.get(pos.get("scan_option_id"))
         pos_rows.append({
@@ -1090,6 +1093,7 @@ elif page == "Open Positions":
             "Opened": str(pos.get("opened_at", ""))[:10],
             "IVR %": round(float(ivr), 1) if ivr is not None else None,
             "Range": range_val,
+            "Limit": limit_val,
             "VIX": round(float(scan_vix), 2) if scan_vix is not None else None,
         })
 
@@ -1104,6 +1108,7 @@ elif page == "Open Positions":
                 "Price Paid": st.column_config.NumberColumn("Price Paid", format="$%.2f"),
                 "IVR %": st.column_config.NumberColumn("IVR %", format="%.1f", width="small"),
                 "Range": st.column_config.NumberColumn("Range", format="±$%.2f", width="small"),
+                "Limit": st.column_config.NumberColumn("Limit", format="$%.2f", width="small"),
                 "VIX": st.column_config.NumberColumn("VIX", format="%.2f", width="small"),
             },
             width="stretch",
