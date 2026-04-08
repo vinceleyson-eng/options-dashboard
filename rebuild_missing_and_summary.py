@@ -105,18 +105,24 @@ for o in all_options:
     if sd:
         option_lookup[(o["symbol"], float(o["strike"]), o["exp_date"], sd)] = o
 
-# Build VIX + IV lookups: scan_option_id → vix / iv / ul / dte / ivr
+# Build VIX + IV + expected_move lookups: scan_option_id → vix / iv / ul / dte / ivr / em
 vix_by_scan_option = {}
 iv_by_scan_option = {}
 ul_by_scan_option = {}
 dte_by_scan_option = {}
 ivr_by_scan_option = {}
+em_by_scan_option = {}
+em_by_key = {}
 for o in all_options:
     vix_by_scan_option[o["id"]] = scan_vix_map.get(o["scan_id"])
     iv_by_scan_option[o["id"]] = o.get("iv")
     ul_by_scan_option[o["id"]] = o.get("underlying_price")
     dte_by_scan_option[o["id"]] = o.get("dte")
     ivr_by_scan_option[o["id"]] = o.get("iv_rank")
+    em_by_scan_option[o["id"]] = o.get("expected_move")
+    sd = scan_map.get(o["scan_id"])
+    if sd and o.get("expected_move"):
+        em_by_key[(o["symbol"], o["exp_date"], sd)] = float(o["expected_move"])
 
 positions = sb.table("positions").select("*").eq("status", "open").order("opened_at").execute().data
 print(f"Positions: {len(positions)}")
@@ -254,8 +260,11 @@ for pos in positions:
     scan_opt_ul = ul_by_scan_option.get(pos.get("scan_option_id"))
     scan_opt_dte = dte_by_scan_option.get(pos.get("scan_option_id"))
     hdr_iv_pct = round(float(scan_opt_iv) * 100, 1) if scan_opt_iv else None
-    hdr_range = None
-    if scan_opt_iv and scan_opt_ul and scan_opt_dte:
+    # Use stored expected_move (straddle-based) if available, else fall back to IV formula
+    hdr_range = em_by_scan_option.get(pos.get("scan_option_id"))
+    if hdr_range:
+        hdr_range = float(hdr_range)
+    elif scan_opt_iv and scan_opt_ul and scan_opt_dte:
         hdr_range = round(float(scan_opt_ul) * float(scan_opt_iv) * _math.sqrt(float(scan_opt_dte) / 365), 2)
 
     # Row 2 (12 cols with IVx, Range)
@@ -317,8 +326,13 @@ for pos in positions:
         diff = round(share_price - strike, 2) if share_price else 0
         pl = round(price_paid - opt_price, 2)
 
-        _iv_pct_r, range_r = _calc_iv_range(opt_price, share_price, strike_int, day["dte"])
-        limit_r = round(float(share_price) + range_r, 2) if range_r is not None and share_price else None
+        em_key = (symbol, exp_date, day["date"])
+        em_val = em_by_key.get(em_key)
+        if em_val:
+            range_r = em_val
+        else:
+            _iv_pct_r, range_r = _calc_iv_range(opt_price, share_price, strike_int, day["dte"])
+        limit_r = round(float(share_price) - range_r, 2) if range_r is not None and share_price else None
         cells = [
             {"userEnteredValue": {"numberValue": to_serial(day["date"])}, "userEnteredFormat": dt_fmt},
             {"userEnteredValue": {"stringValue": occ}, "userEnteredFormat": d_fmt},
@@ -434,8 +448,10 @@ for i, pos in enumerate(sorted(positions, key=lambda p: str(p.get("opened_at", "
     iv_pct = round(float(iv_raw) * 100, 1) if iv_raw else None
     ul_at_scan = ul_by_scan_option.get(scan_opt_id)
     dte_at_scan = dte_by_scan_option.get(scan_opt_id)
-    exp_move = None
-    if iv_raw and ul_at_scan and dte_at_scan:
+    exp_move = em_by_scan_option.get(scan_opt_id)
+    if exp_move:
+        exp_move = float(exp_move)
+    elif iv_raw and ul_at_scan and dte_at_scan:
         import math as _math
         exp_move = round(float(ul_at_scan) * float(iv_raw) * _math.sqrt(float(dte_at_scan) / 365), 2)
 

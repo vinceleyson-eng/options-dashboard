@@ -124,16 +124,23 @@ for o in all_options:
     if sd:
         option_lookup[(o["symbol"], float(o["strike"]), o["exp_date"], sd)] = o
 
-# Build VIX + IV lookups: scan_option_id → vix / iv / ul / dte
+# Build VIX + IV + expected_move lookups: scan_option_id → vix / iv / ul / dte / em
 vix_by_scan_option = {}
 iv_by_scan_option = {}
 ul_by_scan_option = {}
 dte_by_scan_option = {}
+em_by_scan_option = {}
+# Also build expected_move lookup by (symbol, exp_date, scan_date) for daily rows
+em_by_key = {}
 for o in all_options:
     vix_by_scan_option[o["id"]] = scan_vix_map.get(o["scan_id"])
     iv_by_scan_option[o["id"]] = o.get("iv")
     ul_by_scan_option[o["id"]] = o.get("underlying_price")
     dte_by_scan_option[o["id"]] = o.get("dte")
+    em_by_scan_option[o["id"]] = o.get("expected_move")
+    sd = scan_map.get(o["scan_id"])
+    if sd and o.get("expected_move"):
+        em_by_key[(o["symbol"], o["exp_date"], sd)] = float(o["expected_move"])
 
 positions = sb.table("positions").select("*").eq("status", "open").execute().data
 print(f"Loaded {len(all_options)} scan options, {len(positions)} positions")
@@ -360,8 +367,11 @@ for tab_key, pos_list in sorted(groups.items()):
     iv_pct = round(float(iv_raw) * 100, 1) if iv_raw else None
     ul_at_scan = ul_by_scan_option.get(scan_opt_id)
     dte_at_scan = dte_by_scan_option.get(scan_opt_id)
-    exp_move = None
-    if iv_raw and ul_at_scan and dte_at_scan:
+    # Use stored expected_move (straddle-based) if available, else fall back to IV formula
+    exp_move = em_by_scan_option.get(scan_opt_id)
+    if exp_move:
+        exp_move = float(exp_move)
+    elif iv_raw and ul_at_scan and dte_at_scan:
         import math as _math
         exp_move = round(float(ul_at_scan) * float(iv_raw) * _math.sqrt(float(dte_at_scan) / 365), 2)
 
@@ -425,9 +435,14 @@ for tab_key, pos_list in sorted(groups.items()):
         diff = round(share_price - strike_int, 2) if share_price else 0
         pl = round(day["price_paid"] - opt_price, 2)
 
-        # Per-row Range (back-calculated from option price) and Limit = Share Price + Range
-        _iv_pct, range_val = _calc_iv_and_range(opt_price, share_price, strike_int, day["dte"])
-        limit_val = round(float(share_price) + range_val, 2) if range_val is not None and share_price else None
+        # Per-row Range: use expected_move from scan if available, else back-calculate
+        em_key = (symbol, first["exp_date"], day["date"])
+        em_val = em_by_key.get(em_key)
+        if em_val:
+            range_val = em_val
+        else:
+            _iv_pct, range_val = _calc_iv_and_range(opt_price, share_price, strike_int, day["dte"])
+        limit_val = round(float(share_price) - range_val, 2) if range_val is not None and share_price else None
 
         cells = [
             {"userEnteredValue": {"numberValue": to_serial(day["date"])}, "userEnteredFormat": dt_fmt},

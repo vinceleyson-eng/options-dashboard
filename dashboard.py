@@ -934,8 +934,8 @@ if page == "Daily Research":
             "Spread": round(o["bid_ask_spread"], 2) if o.get("bid_ask_spread") is not None else None,
             "Put Price": o.get("put_price"),
             "Underlying": o.get("underlying_price"),
-            "Range": round(float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None,
-            "Limit": round(float(o["underlying_price"]) + float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None,
+            "Range": float(o["expected_move"]) if o.get("expected_move") else (round(float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None),
+            "Limit": round(float(o["underlying_price"]) - float(o["expected_move"]), 2) if o.get("expected_move") and o.get("underlying_price") else (round(float(o["underlying_price"]) - float(o["underlying_price"]) * float(o["iv"]) * (float(o["dte"]) / 365) ** 0.5, 2) if o.get("iv") and o.get("underlying_price") and o.get("dte") else None),
             "VIX": round(float(vix_by_date.get(o.get("scan_date"), 0) or 0), 2) if vix_by_date.get(o.get("scan_date")) else None,
             "Earnings": str(o["earnings"]) if o.get("earnings") else "-",
             "_id": o["id"],
@@ -1049,7 +1049,7 @@ elif page == "Open Positions":
     so_lookup = {}
     vix_lookup = {}
     if so_ids:
-        so_data = sb.table("scan_options").select("id, scan_id, iv_rank, iv, underlying_price, dte").in_("id", so_ids).execute().data
+        so_data = sb.table("scan_options").select("id, scan_id, iv_rank, iv, underlying_price, dte, expected_move").in_("id", so_ids).execute().data
         so_lookup = {s["id"]: s for s in so_data}
         # Get VIX per scan
         scan_ids = list(set(s["scan_id"] for s in so_data))
@@ -1077,8 +1077,9 @@ elif page == "Open Positions":
         ivr = so.get("iv_rank")
         ul = so.get("underlying_price")
         dte = so.get("dte")
-        range_val = round(float(ul) * float(iv_raw) * (float(dte) / 365) ** 0.5, 2) if iv_raw and ul and dte else None
-        limit_val = round(float(ul) + range_val, 2) if range_val is not None and ul else None
+        em = so.get("expected_move")
+        range_val = float(em) if em else (round(float(ul) * float(iv_raw) * (float(dte) / 365) ** 0.5, 2) if iv_raw and ul and dte else None)
+        limit_val = round(float(ul) - range_val, 2) if range_val is not None and ul else None
 
         scan_vix = vix_lookup.get(pos.get("scan_option_id"))
         pos_rows.append({

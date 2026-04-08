@@ -145,6 +145,7 @@ def main():
             "put_price": o.get("put_price"),
             "earnings": parse_date(o.get("earnings")),
             "underlying_price": o.get("underlying_price"),
+            "expected_move": o.get("expected_move"),
             "selected": False,
         })
 

@@ -412,7 +412,7 @@ def push_snapshots_to_sheets(results, market_date=None):
                 option_price, r.get("share_price"), strike, r.get("dte")
             )
             share_price_val = float(r["share_price"] or 0)
-            limit_val = round(share_price_val + range_val, 2) if range_val is not None and share_price_val else None
+            limit_val = round(share_price_val - range_val, 2) if range_val is not None and share_price_val else None
 
             # 11 columns: Date, OCC, Expiration, DTE, Share Price, Strike, Difference, Option Price, P&L, Range, Limit
             row_cells = [
@@ -504,12 +504,13 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
         # Load ALL open positions (not just ones with results)
         all_positions = sb.table("positions").select("*").eq("status", "open").order("opened_at").execute().data
 
-        # Build VIX + IVx lookup: scan_option_id → vix / iv / underlying / dte / ivr
+        # Build VIX + IVx + expected_move lookup: scan_option_id → vix / iv / underlying / dte / ivr / em
         vix_lookup = {}
         iv_lookup = {}       # scan_option_id → iv decimal
         ul_lookup = {}       # scan_option_id → underlying_price at scan
         dte_lookup = {}      # scan_option_id → dte at scan
         ivr_lookup = {}      # scan_option_id → iv_rank
+        em_lookup = {}       # scan_option_id → expected_move
         scan_option_ids = [p["scan_option_id"] for p in all_positions if p.get("scan_option_id")]
         if scan_option_ids:
             scan_opts = sb.table("scan_options").select("*").in_("id", scan_option_ids).execute().data
@@ -522,6 +523,7 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
                 ul_lookup[so["id"]] = so.get("underlying_price")
                 dte_lookup[so["id"]] = so.get("dte")
                 ivr_lookup[so["id"]] = so.get("iv_rank")
+                em_lookup[so["id"]] = so.get("expected_move")
 
         reqs = []
         for i, pos in enumerate(sorted(all_positions, key=lambda p: str(p.get("opened_at", ""))[:10])):
@@ -553,8 +555,10 @@ def update_summary_sheet(sb, positions, results, underlying_prices, option_price
             iv_pct = round(float(iv_raw) * 100, 1) if iv_raw else None
             ul_at_scan = ul_lookup.get(scan_opt_id)
             dte_at_scan = dte_lookup.get(scan_opt_id)
-            exp_move = None
-            if iv_raw and ul_at_scan and dte_at_scan:
+            exp_move = em_lookup.get(scan_opt_id)
+            if exp_move:
+                exp_move = float(exp_move)
+            elif iv_raw and ul_at_scan and dte_at_scan:
                 import math as _math
                 exp_move = round(float(ul_at_scan) * float(iv_raw) * _math.sqrt(float(dte_at_scan) / 365), 2)
 
