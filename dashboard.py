@@ -893,7 +893,7 @@ if page == "Daily Research":
     st.divider()
 
     # Filter controls
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
     with col_f1:
         selected_dates = st.multiselect("Filter by Date", all_dates, default=[all_dates[0]] if all_dates else [])
     with col_f2:
@@ -901,6 +901,8 @@ if page == "Daily Research":
     with col_f3:
         show_selected_only = st.checkbox("Show selected only", value=False)
     with col_f4:
+        strike_lte_limit = st.checkbox("Strike ≤ Limit", value=True, help="Only show options where strike is at or below the expected downside limit")
+    with col_f5:
         sort_by = st.selectbox("Sort by", ["Scan Date", "Symbol", "IVR %", "POP %", "P50 %", "Delta", "DTE"], index=0)
 
     # Filter
@@ -948,6 +950,13 @@ if page == "Daily Research":
         st.info("No options match your filters.")
         st.stop()
 
+    # Filter: Strike ≤ Limit
+    if strike_lte_limit:
+        df = df[df["Limit"].isna() | (df["Strike"] <= df["Limit"])].reset_index(drop=True)
+        if df.empty:
+            st.info("No options match your filters (all strikes exceed their limit price).")
+            st.stop()
+
     # Sort
     sort_col_map = {
         "Scan Date": "Scan Date",
@@ -971,7 +980,7 @@ if page == "Daily Research":
     with col_export:
         export_cols = ["Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                        "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                       "Underlying", "Range", "Limit", "VIX", "Earnings"]
+                       "Range", "Limit", "Underlying", "VIX", "Earnings"]
         st.download_button(
             label="Export CSV",
             data=df[export_cols].to_csv(index=False),
@@ -983,7 +992,7 @@ if page == "Daily Research":
     # Display columns with Scan Date
     display_cols = ["Select", "Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
                     "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                    "Underlying", "Range", "Limit", "VIX", "Earnings"]
+                    "Range", "Limit", "Underlying", "VIX", "Earnings"]
 
     column_config = {
         "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
