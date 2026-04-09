@@ -979,8 +979,8 @@ if page == "Daily Research":
         st.subheader(f"All Options ({len(df)} rows)")
     with col_export:
         export_cols = ["Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
-                       "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                       "Range", "Limit", "Underlying", "VIX", "Earnings"]
+                       "IVR %", "Delta", "Exp Date", "P50 %", "Range", "Limit", "Bid", "Ask", "Spread",
+                       "Underlying", "VIX", "Earnings"]
         st.download_button(
             label="Export CSV",
             data=df[export_cols].to_csv(index=False),
@@ -991,8 +991,8 @@ if page == "Daily Research":
 
     # Display columns with Scan Date
     display_cols = ["Select", "Scan Date", "Symbol", "Company", "Strike", "Put Price", "DTE", "POP %",
-                    "IVR %", "Delta", "Exp Date", "P50 %", "Bid", "Ask", "Spread",
-                    "Range", "Limit", "Underlying", "VIX", "Earnings"]
+                    "IVR %", "Delta", "Exp Date", "P50 %", "Range", "Limit", "Bid", "Ask", "Spread",
+                    "Underlying", "VIX", "Earnings"]
 
     column_config = {
         "Select": st.column_config.CheckboxColumn("Select", help="Check to open trade dialog", width="small"),
